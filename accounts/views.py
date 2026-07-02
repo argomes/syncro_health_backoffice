@@ -2,6 +2,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -52,9 +53,45 @@ class ClinicAccessViewSet(viewsets.ModelViewSet):
         else:
             return qs.filter(support_user=user)
 
+    # Hierarquia de roles de acesso à clínica (maior índice = maior privilégio)
+    _ACCESS_ROLE_RANK = {
+        ClinicAccess.AccessRole.VIEWER: 0,
+        ClinicAccess.AccessRole.ADMIN: 1,
+        ClinicAccess.AccessRole.OWNER: 2,
+    }
+
     def perform_create(self, serializer):
-        """Cria acesso e registra quem concedeu."""
-        serializer.save(granted_by=self.request.user)
+        """Cria acesso e registra quem concedeu.
+
+        Restrições de segurança:
+        - Usuários não-admin só podem conceder roles iguais ou menores ao seu próprio
+          role na clínica alvo.
+        - Usuários não-admin só podem conceder acesso a clínicas às quais eles mesmos
+          já têm acesso ativo.
+        """
+        user = self.request.user
+
+        if user.role != SupportUser.Role.ADMIN:
+            clinic = serializer.validated_data.get('clinic')
+            requested_role = serializer.validated_data.get('role', ClinicAccess.AccessRole.VIEWER)
+
+            # Verificar se o criador tem acesso ativo à clínica alvo
+            creator_access = ClinicAccess.objects.filter(
+                support_user=user,
+                clinic=clinic,
+                revoked_at__isnull=True,
+            ).first()
+
+            if creator_access is None:
+                raise PermissionDenied('no_access_to_clinic')
+
+            # Impedir escalação de privilégio: não pode conceder role maior que o próprio
+            creator_rank = self._ACCESS_ROLE_RANK.get(creator_access.role, 0)
+            requested_rank = self._ACCESS_ROLE_RANK.get(requested_role, 0)
+            if requested_rank > creator_rank:
+                raise PermissionDenied('role_escalation_denied')
+
+        serializer.save(granted_by=user)
 
     @action(detail=True, methods=['post'])
     def revoke(self, request, pk=None):

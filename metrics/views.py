@@ -1,8 +1,10 @@
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic
 from clinics.permissions import IsAuthenticatedByLicenseKey
 from metrics.serializers import SystemLogSerializer
@@ -58,11 +60,24 @@ def logs(request):
     return Response({'created': len(objects)}, status=status.HTTP_201_CREATED)
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def dashboard_metrics(request, clinic_id):
     """
     GET /api/metrics/dashboard/{clinic_id}
     Retorna heartbeat + últimos 50 logs
     """
+    user = request.user
+
+    # Admins podem ver métricas de qualquer clínica
+    if user.role != SupportUser.Role.ADMIN:
+        has_access = ClinicAccess.objects.filter(
+            support_user=user,
+            clinic_id=clinic_id,
+            revoked_at__isnull=True,
+        ).exists()
+        if not has_access:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
     clinic = Clinic.objects.get(id=clinic_id)
     heartbeat = SystemHeartbeat.objects.get(clinic=clinic)
     logs = SystemLog.objects.filter(clinic=clinic).order_by('-occurred_at')[:50]

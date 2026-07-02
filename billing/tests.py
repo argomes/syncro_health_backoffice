@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 from django.test import TestCase
 from django.utils import timezone
+from accounts.models import ClinicAccess
 from billing.serializers import InvoiceSerializer, PlanSerializer
 from clinics.models import Clinic, ClinicStatus, Plan as ClinicsEnum
 from .models import Plan, Invoice, InvoiceStatus
@@ -189,6 +190,14 @@ class InvoiceViewSetTest(APITestCase):
             competencia='2026-06',
             amount=Decimal('299.99'),
             due_date=timezone.now().date(),
+        )
+
+        # Conceder acesso do usuário de teste à clínica (necessário para isolamento de tenant)
+        ClinicAccess.objects.create(
+            support_user=self.user,
+            clinic=self.clinic,
+            role=ClinicAccess.AccessRole.VIEWER,
+            granted_by=self.user,
         )
 
     def test_list_invoices(self):

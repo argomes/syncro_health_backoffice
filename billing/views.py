@@ -5,6 +5,7 @@ from rest_framework.decorators import action, api_view
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic, ClinicStatus
 from .models import Plan, Invoice, InvoiceStatus
 from .serializers import PlanSerializer, InvoiceSerializer, InvoiceUpdateSerializer
@@ -31,7 +32,17 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         return InvoiceSerializer
 
     def get_queryset(self):
+        user = self.request.user
         qs = Invoice.objects.select_related('clinic')
+
+        # Isolamento de tenant: não-admins só veem faturas das suas clínicas
+        if user.role != SupportUser.Role.ADMIN:
+            allowed_clinic_ids = ClinicAccess.objects.filter(
+                support_user=user,
+                revoked_at__isnull=True,
+            ).values_list('clinic_id', flat=True)
+            qs = qs.filter(clinic_id__in=allowed_clinic_ids)
+
         clinic_id = self.request.query_params.get('clinic')
         status_filter = self.request.query_params.get('status')
         competencia = self.request.query_params.get('competencia')
