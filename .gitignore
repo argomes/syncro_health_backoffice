@@ -1,0 +1,30 @@
+# Django
+db.sqlite3
+*.sqlite3
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Media / static
+staticfiles/
+media/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Coverage
+.coverage
+htmlcov/
+
+# JWT keys — never commit private keys
+*.pem
+.service_jwt_private.pem
+.service_jwt_public.pem
