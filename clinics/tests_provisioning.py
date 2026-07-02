@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives import serialization
 import uuid
 
 from clinics.models import Clinic, ClinicStatus, ProvisioningStatus, Plan
-from clinics.provisioning import provision_clinic_database, encrypt_with_public_key
+from clinics.provisioning import provision_clinic_database, encrypt_with_public_key, _validate_pg_identifier
 
 
 class ProvisioningFunctionsTest(TestCase):
@@ -108,3 +108,73 @@ class ProvisioningFunctionsTest(TestCase):
 
         with self.assertRaises(Exception):
             encrypt_with_public_key(invalid_key, plaintext)
+
+
+class DDLSanitizationTest(TestCase):
+    """Testes de sanitização de identificadores PostgreSQL (BO-004)"""
+
+    def test_valid_identifier_passes(self):
+        self.assertEqual(_validate_pg_identifier('clinic_abc123'), 'clinic_abc123')
+        self.assertEqual(_validate_pg_identifier('u_minha_clinica'), 'u_minha_clinica')
+
+    def test_sql_injection_via_semicolon_raises(self):
+        with self.assertRaises(ValueError):
+            _validate_pg_identifier('abc; DROP DATABASE postgres; --')
+
+    def test_sql_injection_via_quotes_raises(self):
+        with self.assertRaises(ValueError):
+            _validate_pg_identifier('abc" OR "1"="1')
+
+    def test_identifier_starting_with_digit_raises(self):
+        with self.assertRaises(ValueError):
+            _validate_pg_identifier('1clinic')
+
+    def test_identifier_with_uppercase_raises(self):
+        with self.assertRaises(ValueError):
+            _validate_pg_identifier('Clinic_ABC')
+
+    def test_identifier_with_hyphen_raises(self):
+        # slugs com hífen devem ser convertidos antes de chegar aqui
+        with self.assertRaises(ValueError):
+            _validate_pg_identifier('clinic-abc')
+
+    def test_empty_identifier_raises(self):
+        with self.assertRaises(ValueError):
+            _validate_pg_identifier('')
+
+    def test_identifier_too_long_raises(self):
+        # 64 chars — acima do limite de 63
+        with self.assertRaises(ValueError):
+            _validate_pg_identifier('a' * 64)
+
+    def test_identifier_max_length_passes(self):
+        # 63 chars — no limite
+        _validate_pg_identifier('a' + 'b' * 62)
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_provision_uses_quoted_identifiers(self, mock_connect):
+        """DDL deve usar identificadores entre aspas duplas, não interpolação direta."""
+        from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+        from cryptography.hazmat.primitives import serialization as _ser
+
+        private_key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_pem = private_key.public_key().public_bytes(
+            encoding=_ser.Encoding.PEM,
+            format=_ser.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+
+        from clinics.models import Clinic, ClinicStatus, Plan
+        clinic = Clinic(name='Test', slug='test-clinic', plan=Plan.PROFESSIONAL,
+                        status=ClinicStatus.ACTIVE, public_key_pem=public_pem)
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+
+        provision_clinic_database(clinic)
+
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        for call in calls:
+            if 'CREATE USER' in call or 'CREATE DATABASE' in call or 'REVOKE' in call:
+                self.assertIn('"', call, "Identificador deve estar entre aspas duplas no DDL")

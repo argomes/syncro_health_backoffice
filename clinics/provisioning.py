@@ -1,5 +1,6 @@
 import base64
 import logging
+import re
 import secrets
 import string
 
@@ -9,6 +10,23 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+# Identificadores PostgreSQL: apenas letras minúsculas, dígitos e underscore.
+# Máximo 63 chars (limite do Postgres). Deve começar com letra.
+_IDENT_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
+
+
+def _validate_pg_identifier(name: str) -> str:
+    """Levanta ValueError se o identificador não for seguro para uso em DDL."""
+    if not _IDENT_RE.match(name):
+        raise ValueError(f"Identificador PostgreSQL inválido: {name!r}")
+    return name
+
+
+def _quote_ident(name: str) -> str:
+    """Retorna o identificador entre aspas duplas.
+    Seguro porque _validate_pg_identifier garante [a-z][a-z0-9_]+ — sem chars especiais."""
+    return f'"{name}"'
 
 
 def _generate_password(length: int = 32) -> str:
@@ -47,18 +65,22 @@ def provision_clinic_database(clinic) -> tuple[str, str, str]:
     Cria database e usuário PostgreSQL para a clínica.
     Retorna (db_name, db_user, senha_criptografada).
     A senha em plaintext é descartada após criptografia.
-    Levanta RuntimeError em caso de falha.
+    Levanta ValueError se o slug gerar identificadores inválidos.
+    Levanta RuntimeError em caso de falha no Postgres.
     """
-    db_name = f"clinic_{clinic.slug.replace('-', '_')}"
-    db_user = f"u_{clinic.slug.replace('-', '_')}"
+    slug = clinic.slug.replace('-', '_').lower()
+    db_name = _validate_pg_identifier(f"clinic_{slug}")
+    db_user = _validate_pg_identifier(f"u_{slug}")
     password = _generate_password()
 
     conn = _superuser_conn()
     try:
         cur = conn.cursor()
-        cur.execute(f"CREATE USER {db_user} WITH PASSWORD %s", (password,))
-        cur.execute(f"CREATE DATABASE {db_name} OWNER {db_user}")
-        cur.execute(f"REVOKE ALL ON DATABASE {db_name} FROM PUBLIC")
+        q_user = _quote_ident(db_user)
+        q_db = _quote_ident(db_name)
+        cur.execute(f"CREATE USER {q_user} WITH PASSWORD %s", (password,))
+        cur.execute(f"CREATE DATABASE {q_db} OWNER {q_user}")
+        cur.execute(f"REVOKE ALL ON DATABASE {q_db} FROM PUBLIC")
         cur.close()
     except Exception as exc:
         logger.error("provisioning_failed clinic_id=%s", str(clinic.id))
@@ -66,9 +88,8 @@ def provision_clinic_database(clinic) -> tuple[str, str, str]:
     finally:
         conn.close()
 
-    # Criptografa com a chave pública da clínica — senha em plaintext descartada aqui
     encrypted = encrypt_with_public_key(clinic.public_key_pem, password)
-    password = None  # garante que não fica na memória além do necessário
+    password = None  # plaintext descartado imediatamente após uso
 
     return db_name, db_user, encrypted
 
@@ -77,16 +98,22 @@ def deprovision_clinic_database(db_name: str, db_user: str) -> None:
     """
     Remove database e usuário PostgreSQL da clínica.
     Chamado apenas ao deletar uma clínica.
+    Levanta ValueError se os identificadores forem inválidos.
     """
+    _validate_pg_identifier(db_name)
+    _validate_pg_identifier(db_user)
+
     conn = _superuser_conn()
     try:
         cur = conn.cursor()
+        q_db = _quote_ident(db_name)
+        q_user = _quote_ident(db_user)
         cur.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s",
             (db_name,),
         )
-        cur.execute(f"DROP DATABASE IF EXISTS {db_name}")
-        cur.execute(f"DROP USER IF EXISTS {db_user}")
+        cur.execute(f"DROP DATABASE IF EXISTS {q_db}")
+        cur.execute(f"DROP USER IF EXISTS {q_user}")
         cur.close()
     except Exception as exc:
         logger.error("deprovisioning_failed db=%s", db_name)
