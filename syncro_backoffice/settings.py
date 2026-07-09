@@ -205,3 +205,9 @@ CELERY_TIMEZONE = TIME_ZONE
 # Em desenvolvimento, executa tasks de forma síncrona (sem broker Redis).
 # Sobrescreva com CELERY_TASK_ALWAYS_EAGER=False no .env de produção.
 CELERY_TASK_ALWAYS_EAGER = env.bool('CELERY_TASK_ALWAYS_EAGER', default=DEBUG)
+
+STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# ADICIONE ESTA LINHA:
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
