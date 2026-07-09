@@ -1,2 +1,0 @@
-web: gunicorn nome_do_seu_projeto.wsgi:application --bind 0.0.0.0:$PORT
-web: python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn syncro_backoffice.wsgi:application --bind 0.0.0.0:$PORT
