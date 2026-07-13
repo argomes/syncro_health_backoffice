@@ -1,0 +1,39 @@
+{% extends "portal_gestor/base.html" %}
+{% block title %}Novo Relatório{% endblock %}
+{% block content %}
+    <h1>Gerar Relatório</h1>
+    <p class="muted">
+        A sincronização com a clínica pode levar alguns minutos — o relatório
+        não fica pronto na hora. Você poderá acompanhar o status na próxima tela.
+    </p>
+
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" class="report-form">
+        {% csrf_token %}
+
+        <label for="date_from">De</label>
+        <input type="date" id="date_from" name="date_from" value="{{ form_data.date_from|default:'' }}" required>
+
+        <label for="date_to">Até</label>
+        <input type="date" id="date_to" name="date_to" value="{{ form_data.date_to|default:'' }}" required>
+
+        <fieldset>
+            <legend>Dados a incluir</legend>
+            <label class="checkbox-label">
+                <input type="checkbox" name="entities" value="patients"
+                       {% if not form_data or 'patients' in form_data.entities %}checked{% endif %}>
+                Pacientes
+            </label>
+            <label class="checkbox-label">
+                <input type="checkbox" name="entities" value="appointments"
+                       {% if not form_data or 'appointments' in form_data.entities %}checked{% endif %}>
+                Agendamentos
+            </label>
+        </fieldset>
+
+        <button type="submit" class="button">Gerar Relatório</button>
+    </form>
+{% endblock %}

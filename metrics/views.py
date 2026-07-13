@@ -8,6 +8,7 @@ from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic
 from clinics.permissions import IsAuthenticatedByLicenseKey
 from metrics.serializers import SystemLogSerializer
+from portal_gestor.services import get_pending_session_key_payload
 from .models import SystemHeartbeat, SystemLog, LogLevel
 
 
@@ -27,7 +28,17 @@ def heartbeat(request):
             'sync_connected': data.get('sync_connected', False),
         },
     )
-    return Response({'ok': True}, status=status.HTTP_200_OK)
+
+    response_body = {'ok': True}
+
+    # TASK-042/041: se houver uma ReportSession pendente para esta clínica,
+    # entrega a TemporaryKey cifrada + a janela de resync no mesmo heartbeat —
+    # sem endpoint dedicado no gateway (ver syncro_gateway health_worker.go).
+    session_payload = get_pending_session_key_payload(clinic)
+    if session_payload is not None:
+        response_body.update(session_payload)
+
+    return Response(response_body, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])

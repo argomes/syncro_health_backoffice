@@ -1,0 +1,147 @@
+import uuid
+from django.conf import settings
+from django.db import models
+from django.utils import timezone
+
+# Entidades que o gateway sabe ressincronizar sob demanda (ver TASK-041, lado
+# syncro_gateway — internal/adapters/input/workers/health_worker.go).
+SUPPORTED_RESYNC_ENTITIES = ('patients', 'appointments')
+
+DEFAULT_REPORT_SESSION_TTL_HOURS = getattr(settings, 'REPORT_SESSION_TTL_HOURS', 2)
+
+
+class ReportSessionStatus(models.TextChoices):
+    PENDING = 'pending', 'Pendente'
+    KEY_DELIVERED = 'key_delivered', 'Chave entregue ao gateway'
+    SYNCING = 'syncing', 'Sincronizando'
+    READY = 'ready', 'Pronto'
+    EXPIRED = 'expired', 'Expirado'
+
+
+class ReportSession(models.Model):
+    """
+    Sessão de relatório: representa o pedido de um ClinicUser para gerar um
+    relatório sobre uma janela de datas, autorizado por uma TemporaryKey de
+    curta duração (TASK-039/040/041, lado gateway).
+
+    A TemporaryKey em si NUNCA é persistida em disco em texto claro — vive só
+    no cache (Redis via django.core.cache, TTL = expires_at) até a entrega ser
+    confirmada. Ver portal_gestor/services.py.
+
+    Fluxo de status: pending → key_delivered → syncing → ready (ou → expired
+    a qualquer momento). A transição syncing→ready depende de um sinal do
+    gateway confirmando o resync (endpoint de ack) — ainda não implementado
+    nesta task, é uma dependência explícita da TASK-043 (ver nota na task doc).
+    """
+
+    session_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(
+        'clinics.Clinic',
+        on_delete=models.CASCADE,
+        related_name='report_sessions',
+    )
+    created_by = models.ForeignKey(
+        'accounts.ClinicUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='report_sessions_created',
+    )
+
+    # Escopo do relatório — entidades e janela de datas pedidas.
+    entities_scope = models.JSONField(default=list, blank=True)
+    date_from = models.DateTimeField()
+    date_to = models.DateTimeField()
+
+    status = models.CharField(
+        max_length=20,
+        choices=ReportSessionStatus,
+        default=ReportSessionStatus.PENDING,
+    )
+    expires_at = models.DateTimeField()
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Sessão de Relatório'
+        verbose_name_plural = 'Sessões de Relatório'
+        indexes = [
+            models.Index(fields=['clinic', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.clinic.name} — {self.session_id} ({self.status})'
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    def mark_key_delivered(self):
+        self.status = ReportSessionStatus.KEY_DELIVERED
+        self.delivered_at = timezone.now()
+        self.save(update_fields=['status', 'delivered_at', 'updated_at'])
+
+    def mark_expired(self):
+        self.status = ReportSessionStatus.EXPIRED
+        self.save(update_fields=['status', 'updated_at'])
+
+
+class ProductNotice(models.Model):
+    """
+    Aviso contextual dispensável (TASK-051) — substitui a ideia original de
+    "mural de avisos genérico", rejeitada pela PO Healthtech em 2026-07-13
+    (público de baixa frequência de acesso; mural fixo vira "vitrine ignorada"
+    em poucos acessos). Conteúdo é o mesmo para todas as clínicas (não tem FK
+    de clinic) — só a dispensa é por ClinicUser (ver ClinicUserNoticeDismissal).
+
+    Só um aviso deveria estar `active=True` com vigência corrente por vez no
+    MVP — não há fila/prioridade entre avisos concorrentes.
+    """
+
+    title = models.CharField(max_length=255)
+    body = models.TextField()
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    active = models.BooleanField(default=True, help_text='Kill-switch manual — desativa sem precisar apagar.')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-starts_at']
+        verbose_name = 'Aviso do Produto'
+        verbose_name_plural = 'Avisos do Produto'
+
+    def __str__(self):
+        return self.title
+
+    def is_current(self):
+        now = timezone.now()
+        return self.active and self.starts_at <= now <= self.ends_at
+
+
+class ClinicUserNoticeDismissal(models.Model):
+    """Registra que um ClinicUser específico já dispensou um ProductNotice —
+    nunca mais aparece para ele, mesmo em nova sessão de login (por isso é uma
+    tabela, não um cookie/localStorage, que não sobreviveria a outro dispositivo)."""
+
+    clinic_user = models.ForeignKey(
+        'accounts.ClinicUser',
+        on_delete=models.CASCADE,
+        related_name='notice_dismissals',
+    )
+    notice = models.ForeignKey(
+        ProductNotice,
+        on_delete=models.CASCADE,
+        related_name='dismissals',
+    )
+    dismissed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('clinic_user', 'notice')
+        verbose_name = 'Dispensa de Aviso'
+        verbose_name_plural = 'Dispensas de Aviso'
+
+    def __str__(self):
+        return f'{self.clinic_user.email} dispensou "{self.notice.title}"'

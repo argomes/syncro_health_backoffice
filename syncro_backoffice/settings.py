@@ -15,6 +15,13 @@ DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
 
+# Controla o atributo Secure dos cookies httpOnly do portal_gestor (TASK-046)
+# de forma independente de DEBUG — DEBUG também liga CORS_ALLOW_ALL_ORIGINS e
+# outras coisas, então usar DEBUG como proxy pra "estamos em HTTPS?" acopla
+# duas decisões que podem divergir (ex.: staging com DEBUG=True atrás de TLS).
+# Default seguro: só desliga Secure quando explicitamente DEBUG=True.
+PORTAL_COOKIE_SECURE = env.bool('PORTAL_COOKIE_SECURE', default=not DEBUG)
+
 INSTALLED_APPS = [
     "unfold", # 1. Tem que ser o primeiro
     "unfold.contrib.filters", # 2. Filtros bonitos
@@ -43,6 +50,7 @@ INSTALLED_APPS = [
     'metrics',
     'support',
     'integrations',
+    'portal_gestor',
 ]
 
 MIDDLEWARE = [
@@ -55,6 +63,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'portal_gestor.middleware.ClinicPortalAuthMiddleware',
 ]
 
 ROOT_URLCONF = 'syncro_backoffice.urls'
@@ -69,6 +78,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'portal_gestor.context_processors.active_notice',
             ],
         },
     },
@@ -105,7 +115,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ── REST Framework ────────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'accounts.authentication.SafeJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
@@ -195,6 +205,42 @@ NOTION_DATABASE_ID = env('NOTION_DATABASE_ID', default='')
 
 # ASAAS Webhook — token configurado no painel ASAAS (Configurações > Notificações)
 ASAAS_WEBHOOK_TOKEN = env('ASAAS_WEBHOOK_TOKEN', default='')
+
+# Cache — usado por portal_gestor (TASK-042) para guardar a TemporaryKey
+# efêmera (TTL = expires_at da ReportSession). PRECISA ser um backend
+# compartilhado entre workers gunicorn em produção: LocMemCache (default do
+# Django sem CACHES configurado) é por-processo e faria a chave "sumir"
+# sempre que o heartbeat caísse num worker diferente do que criou a sessão,
+# disparando o fallback de "cache evicted" (marca a sessão expired) de forma
+# espúria em qualquer deploy multi-worker.
+#
+# Espelha o padrão já usado para CELERY_TASK_ALWAYS_EAGER: default seguro
+# para dev local (LocMemCache, sem exigir infra) e explícito para produção
+# via env. CACHE_URL DEVE ser setado em qualquer ambiente com DEBUG=False e
+# mais de um worker gunicorn — setar sem isso quebra silenciosamente a
+# garantia de TTL da TemporaryKey (ver TASK-042, nota de revisão de
+# segurança). Reaproveita o Redis do Celery broker, DB separado (1) por
+# padrão para não misturar namespaces.
+CACHE_URL = env('CACHE_URL', default='')
+if CACHE_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': CACHE_URL,
+        }
+    }
+elif not DEBUG:
+    # Produção sem CACHE_URL explícito: falha alto e cedo em vez de operar
+    # silenciosamente sobre um cache por-processo que quebra a garantia de
+    # TTL da TemporaryKey em qualquer deploy multi-worker.
+    raise RuntimeError(
+        'CACHE_URL não configurado com DEBUG=False. portal_gestor depende de '
+        'um cache compartilhado entre workers (Redis) para a TemporaryKey '
+        '(TASK-042) — LocMemCache silenciosamente quebra em produção '
+        'multi-worker. Configure CACHE_URL (ex.: redis://host:6379/1).'
+    )
+# DEBUG=True sem CACHE_URL: usa o LocMemCache default do Django — adequado
+# para dev local single-process (runserver), sem exigir Redis rodando.
 
 # Celery Configurations
 CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
