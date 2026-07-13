@@ -47,7 +47,8 @@
             align-items: center;
             justify-content: space-between;
         }
-        header .brand { font-weight: 600; }
+        header .brand { font-weight: 600; color: inherit; text-decoration: none; }
+        header .brand:hover { color: var(--color-brand-600); }
         header .user-info {
             display: flex;
             align-items: center;
@@ -168,12 +169,47 @@
             white-space: nowrap;
         }
         .notice-banner-dismiss:hover { background: var(--color-brand-500); color: #fff; }
+
+        /* Navegação de nível 1 (TASK-052 — estrutura de menu proposta pela PO,
+           2026-07-14): faixa fina abaixo do header, só com os 2 itens que
+           existem hoje. Nas telas de sub-fluxo (relatório), o mesmo espaço
+           vira breadcrumb — nunca os dois empilhados. */
+        .portal-nav {
+            background: #fff;
+            border-bottom: 1px solid var(--color-gray-200);
+            padding: 0 1.5rem;
+            display: flex;
+            gap: 1.5rem;
+        }
+        .portal-nav a {
+            display: inline-block;
+            padding: 0.7rem 0.1rem;
+            color: var(--color-gray-500);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+        }
+        .portal-nav a:hover { color: var(--color-gray-900); }
+        .portal-nav a.active { color: var(--color-brand-600); border-bottom-color: var(--color-brand-500); }
+
+        .portal-breadcrumb {
+            background: #fff;
+            border-bottom: 1px solid var(--color-gray-200);
+            padding: 0.7rem 1.5rem;
+            font-size: 0.8125rem;
+            color: var(--color-gray-500);
+        }
+        .portal-breadcrumb a { color: var(--color-gray-500); text-decoration: none; }
+        .portal-breadcrumb a:hover { color: var(--color-brand-600); text-decoration: underline; }
+        .portal-breadcrumb .current { color: var(--color-gray-900); font-weight: 500; }
+        .portal-breadcrumb .sep { margin: 0 0.4rem; color: var(--color-gray-400); }
     </style>
     {% block extra_head %}{% endblock %}
 </head>
 <body>
     <header>
-        <div class="brand">Portal Gestor — {{ request.clinic.name }}</div>
+        <a class="brand" href="{% url 'portal_home' %}">Portal Gestor — {{ request.clinic.name }}</a>
         <div class="user-info">
             <span>{{ request.clinic_user.email }}</span>
             <form method="post" action="{% url 'portal_logout' %}">
@@ -182,6 +218,12 @@
             </form>
         </div>
     </header>
+    {% block subnav %}
+        <nav class="portal-nav">
+            <a href="{% url 'portal_home' %}" class="{% if request.resolver_match.url_name == 'portal_home' %}active{% endif %}">Dashboard</a>
+            <a href="{% url 'portal_report_new' %}" class="{% if 'report' in request.resolver_match.url_name %}active{% endif %}">Relatórios</a>
+        </nav>
+    {% endblock %}
     {% include "portal_gestor/_notice_banner.html" %}
     <main>
         {% block content %}{% endblock %}

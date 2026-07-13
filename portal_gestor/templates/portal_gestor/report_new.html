@@ -1,5 +1,12 @@
 {% extends "portal_gestor/base.html" %}
 {% block title %}Novo Relatório{% endblock %}
+{% block subnav %}
+    <nav class="portal-breadcrumb">
+        <a href="{% url 'portal_home' %}">Dashboard</a>
+        <span class="sep">/</span>
+        <span class="current">Relatórios — Novo</span>
+    </nav>
+{% endblock %}
 {% block content %}
     <h1>Gerar Relatório</h1>
     <p class="muted">
