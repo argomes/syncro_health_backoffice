@@ -94,6 +94,12 @@ DATABASES = {
 # URL do superuser PostgreSQL — usada APENAS pelo provisioning.py para criar databases
 PROVISIONING_DATABASE_URL = env('PROVISIONING_DATABASE_URL', default='')
 
+# Nome de um banco Postgres marcado como TEMPLATE (datistemplate=true), com o schema do
+# gateway (patients/appointments/dual envelope) já aplicado — se configurado, cada banco
+# de clínica nasce com o schema pronto via CREATE DATABASE ... TEMPLATE, em vez de vazio
+# (TASK-053, homologação). Vazio = comportamento anterior, banco vazio.
+CLINIC_DB_TEMPLATE = env('CLINIC_DB_TEMPLATE', default='')
+
 AUTH_USER_MODEL = 'accounts.SupportUser'
 
 AUTH_PASSWORD_VALIDATORS = [
