@@ -353,11 +353,65 @@ class CacheBackendProductionGuardTest(TestCase):
         self.assertIn('CACHE_URL', result.stderr)
 
     def test_debug_false_with_cache_url_boots(self):
-        result = self._boot_with_env({'DEBUG': 'False', 'CACHE_URL': 'redis://localhost:6379/1'})
+        # TISS_FERNET_KEY também é exigido com DEBUG=False (ver
+        # TissFernetKeyProductionGuardTest) — setar aqui pra isolar o que
+        # este teste quer provar (o guard de CACHE_URL).
+        result = self._boot_with_env({
+            'DEBUG': 'False',
+            'CACHE_URL': 'redis://localhost:6379/1',
+            'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+        })
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_debug_true_without_cache_url_boots_with_locmem(self):
         result = self._boot_with_env({'DEBUG': 'True', 'CACHE_URL': ''})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TissFernetKeyProductionGuardTest(TestCase):
+    """
+    tiss/crypto.py cifra login/senha de operadora (TISSOperatorConfig) em
+    repouso usando TISS_FERNET_KEY. O placeholder de dev em settings.py é
+    público neste repositório — se chegasse em produção, equivaleria a não
+    cifrar nada. settings.py deve falhar cedo (RuntimeError no boot) se
+    DEBUG=False e TISS_FERNET_KEY não estiver configurado explicitamente.
+
+    Roda em subprocesso pelo mesmo motivo do CacheBackendProductionGuardTest
+    acima: settings já está carregado no processo de teste.
+    """
+
+    def _boot_with_env(self, extra_env):
+        env = os.environ.copy()
+        env.update(extra_env)
+        result = subprocess.run(
+            [sys.executable, '-c', 'import django; django.setup()'],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result
+
+    def test_debug_false_without_tiss_fernet_key_fails_fast(self):
+        result = self._boot_with_env({
+            'DEBUG': 'False',
+            'CACHE_URL': 'redis://localhost:6379/1',
+            'TISS_FERNET_KEY': '',
+        })
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('TISS_FERNET_KEY', result.stderr)
+
+    def test_debug_false_with_tiss_fernet_key_boots(self):
+        result = self._boot_with_env({
+            'DEBUG': 'False',
+            'CACHE_URL': 'redis://localhost:6379/1',
+            'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_debug_true_without_tiss_fernet_key_boots_with_placeholder(self):
+        result = self._boot_with_env({'DEBUG': 'True', 'TISS_FERNET_KEY': ''})
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

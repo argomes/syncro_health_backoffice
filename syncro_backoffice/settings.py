@@ -359,12 +359,24 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 #
 # Chave Fernet para cifrar login/senha de operadora em repouso
 # (tiss/crypto.py). Gerar com `Fernet.generate_key()`. Em dev sem valor
-# configurado, cai num valor fixo de placeholder (NUNCA usar em produção —
-# lá é obrigatório setar TISS_FERNET_KEY no .env real).
+# configurado, cai num placeholder fixo (só serve pra rodar localmente sem
+# exigir setup extra). Mesmo padrão de fail-fast já usado para CACHE_URL
+# (ver acima): DEBUG=False sem TISS_FERNET_KEY explícito quebra o boot em
+# vez de cifrar credenciais de operadora (TISSOperatorConfig) com uma chave
+# placeholder pública e conhecida — o que equivaleria a não cifrar nada.
 TISS_FERNET_KEY = env(
     'TISS_FERNET_KEY',
-    default='Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+    default='Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=' if DEBUG else None,
 )
+if not DEBUG and not TISS_FERNET_KEY:
+    raise RuntimeError(
+        'TISS_FERNET_KEY não configurado com DEBUG=False. As credenciais de '
+        'operadora TISS (TISSOperatorConfig) são cifradas em repouso com '
+        'essa chave (tiss/crypto.py) — usar o placeholder de dev em '
+        'produção equivale a não cifrar nada, pois a chave é pública neste '
+        'repositório. Configure TISS_FERNET_KEY (gerar com '
+        '`Fernet.generate_key()`).'
+    )
 
 # Diretório com os XSDs oficiais ANS (tissV4_02_00.xsd e includes) usados
 # por tiss/xml_validator.py para validar o lote antes do envio SOAP. Fonte
