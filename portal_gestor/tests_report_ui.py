@@ -169,11 +169,26 @@ class ReportStatusViewTest(TestCase):
         self.assertContains(response, 'Aguardando sincronização')
         self.assertContains(response, 'hx-trigger="every 10s"')
 
-    def test_key_delivered_status_shows_results_link_no_polling(self):
+    def test_key_delivered_status_shows_results_link_and_keeps_polling(self):
+        """
+        key_delivered ainda não é terminal (TASK-052) — o ack do gateway pode
+        chegar num heartbeat seguinte e levar a sessão a `ready`, então o
+        polling continua; o usuário já pode ver resultados parciais enquanto
+        isso.
+        """
         self.session.status = ReportSessionStatus.KEY_DELIVERED
         self.session.save(update_fields=['status'])
 
         response = self.client.get(f'/portal/relatorios/{self.session.session_id}/')
+        self.assertContains(response, 'Ver resultados')
+        self.assertContains(response, 'hx-trigger="every 10s"')
+
+    def test_ready_status_shows_pronto_and_stops_polling(self):
+        self.session.status = ReportSessionStatus.READY
+        self.session.save(update_fields=['status'])
+
+        response = self.client.get(f'/portal/relatorios/{self.session.session_id}/')
+        self.assertContains(response, 'Pronto')
         self.assertContains(response, 'Ver resultados')
         self.assertNotContains(response, 'hx-trigger="every 10s"')
 

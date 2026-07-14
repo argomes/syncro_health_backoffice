@@ -29,9 +29,9 @@ class ReportSession(models.Model):
     confirmada. Ver portal_gestor/services.py.
 
     Fluxo de status: pending → key_delivered → syncing → ready (ou → expired
-    a qualquer momento). A transição syncing→ready depende de um sinal do
-    gateway confirmando o resync (endpoint de ack) — ainda não implementado
-    nesta task, é uma dependência explícita da TASK-043 (ver nota na task doc).
+    a qualquer momento). A transição para ready depende de um sinal do gateway
+    confirmando que o resync foi persistido — chega no corpo do heartbeat como
+    resync_ack (TASK-052, ver metrics/views.py::_apply_resync_ack).
     """
 
     session_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -84,6 +84,15 @@ class ReportSession(models.Model):
 
     def mark_expired(self):
         self.status = ReportSessionStatus.EXPIRED
+        self.save(update_fields=['status', 'updated_at'])
+
+    def mark_ready(self):
+        """
+        Chamado quando o gateway confirma (via resync_ack no heartbeat, TASK-052) que
+        terminou de verdade a ressincronização da janela pedida — fecha o TODO deixado
+        pela TASK-042/043 (a sessão nunca chegava a `ready` antes disso).
+        """
+        self.status = ReportSessionStatus.READY
         self.save(update_fields=['status', 'updated_at'])
 
 
