@@ -133,3 +133,55 @@ class ClinicAdminSensitiveFieldsTest(TestCase):
         # Sem nenhuma permissão sobre ClinicUser, o Django admin nega acesso
         # (redireciona pro login/mostra 403), nunca lista o changelist.
         self.assertNotEqual(response.status_code, 200)
+
+
+class AdminSidebarNavigationTest(TestCase):
+    """
+    TASK-057 — a sidebar do Unfold (UNFOLD["SIDEBAR"]["navigation"]) mostra
+    só os itens que o usuário tem permissão de ver, controlado pelos grupos
+    da TASK-056.
+    """
+
+    def setUp(self):
+        seed_groups()
+        self.client = Client()
+
+    def test_analyst_sees_operational_items_not_admin_only(self):
+        analyst = SupportUser.objects.create_user(
+            username='analista2', email='analista2@syncro.test', password='senha-teste-123',
+            is_staff=True,
+        )
+        analyst.groups.add(Group.objects.get(name='Analista Operacional'))
+        self.client.force_login(analyst)
+
+        response = self.client.get(reverse('admin:index'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Clínicas')
+        self.assertContains(response, 'Gateways')
+        self.assertContains(response, 'Relatórios')
+        # Sem is_superuser, não deve ver o grupo restrito de Usuários & Permissões.
+        self.assertNotContains(response, 'Usuários & Permissões')
+
+    def test_superuser_sees_all_items(self):
+        superuser = SupportUser.objects.create_superuser(
+            username='root2', email='root2@syncro.test', password='senha-teste-123',
+        )
+        self.client.force_login(superuser)
+
+        response = self.client.get(reverse('admin:index'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Clínicas')
+        self.assertContains(response, 'Gateways')
+        self.assertContains(response, 'Usuários & Permissões')
+
+    def test_staff_with_no_groups_sees_only_dashboard(self):
+        bare_staff = SupportUser.objects.create_user(
+            username='semgrupo', email='semgrupo@syncro.test', password='senha-teste-123',
+            is_staff=True,
+        )
+        self.client.force_login(bare_staff)
+
+        response = self.client.get(reverse('admin:index'))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Gateways')
+        self.assertNotContains(response, 'Usuários & Permissões')

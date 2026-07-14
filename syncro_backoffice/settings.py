@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import timedelta
 import environ
+from django.urls import reverse_lazy
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -179,9 +180,89 @@ UNFOLD = {
             "900": "#082f49",   
         },
     },
+    # TASK-057: busca geral (Cmd+K) cobrindo os models que um analista/admin
+    # mais procura no dia a dia — clínica por nome/slug, gateway por clínica,
+    # ticket de suporte.
+    "COMMAND": {
+        "search_models": [
+            "clinics.Clinic",
+            "metrics.SystemHeartbeat",
+            "support.Ticket",
+        ],
+    },
     "SIDEBAR": {
         "show_search": True,
         "show_all_applications": False,
+        # TASK-057: substitui a lista crua de apps/models pelo agrupamento
+        # operacional definido no PO (Principal/Operações/Sistema). Cada item
+        # usa `permission` checando os grupos da TASK-056 — um usuário sem a
+        # permissão correspondente simplesmente não vê o item (Unfold já trata
+        # isso, não precisa de lógica extra aqui).
+        "navigation": [
+            {
+                "title": "Principal",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Dashboard",
+                        "icon": "dashboard",
+                        "link": reverse_lazy("admin:index"),
+                        "permission": lambda request: request.user.is_staff,
+                    },
+                    {
+                        "title": "Clínicas",
+                        "icon": "business",
+                        "link": reverse_lazy("admin:clinics_clinic_changelist"),
+                        "permission": lambda request: request.user.has_perm("clinics.view_clinic"),
+                    },
+                ],
+            },
+            {
+                "title": "Operações",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Gateways",
+                        "icon": "dns",
+                        "link": reverse_lazy("admin:metrics_systemheartbeat_changelist"),
+                        "permission": lambda request: request.user.has_perm("metrics.view_systemheartbeat"),
+                    },
+                    {
+                        "title": "Relatórios",
+                        "icon": "description",
+                        "link": reverse_lazy("admin:portal_gestor_reportsession_changelist"),
+                        "permission": lambda request: request.user.has_perm("portal_gestor.view_reportsession"),
+                    },
+                    # "Assinaturas" (ASAAS) e "Backups" entram aqui quando essas
+                    # integrações existirem — sem model/tela ainda, não vale
+                    # colocar um link morto no menu.
+                ],
+            },
+            {
+                "title": "Sistema",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Logs",
+                        "icon": "terminal",
+                        "link": reverse_lazy("admin:metrics_systemlog_changelist"),
+                        "permission": lambda request: request.user.has_perm("metrics.view_systemlog"),
+                    },
+                    {
+                        "title": "Suporte",
+                        "icon": "support_agent",
+                        "link": reverse_lazy("admin:support_ticket_changelist"),
+                        "permission": lambda request: request.user.has_perm("support.view_ticket"),
+                    },
+                    {
+                        "title": "Usuários & Permissões",
+                        "icon": "admin_panel_settings",
+                        "link": reverse_lazy("admin:auth_group_changelist"),
+                        "permission": lambda request: request.user.is_superuser,
+                    },
+                ],
+            },
+        ],
     },
     "TABS": [
         {
