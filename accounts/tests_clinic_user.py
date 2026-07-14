@@ -5,12 +5,16 @@ Cobre: login/senha, isolamento entre ClinicUser de clínicas diferentes,
 clínica inativa, ClinicUser inativo, provider LDAP ainda não implementado,
 e que um token de ClinicUser não dá acesso a rotas de SupportUser (e vice-versa).
 """
+import base64
+import json
 import uuid
 from django.core.cache import cache
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
+
+import jwt
 
 from clinics.models import Clinic, ClinicStatus, Plan
 from .models import ClinicUser
@@ -195,3 +199,44 @@ class ClinicUserAuthAPITest(APITestCase):
         me = self.client.get('/portal/api/auth/me/', HTTP_AUTHORIZATION=f'Bearer {new_access}')
         self.assertEqual(me.status_code, status.HTTP_200_OK)
         self.assertEqual(me.data['clinic_id'], str(self.clinic_a.id))
+
+    def test_forged_jwt_resigned_with_wrong_secret_rejected(self):
+        """TASK-044 cenário (e) — payload adulterado (user_id trocado para o
+        ClinicUser da clínica B) e reassinado com um segredo que não é a
+        SECRET_KEY do backoffice. A assinatura HS256 não bate: JWTAuthentication
+        deve rejeitar antes mesmo de chegar em ClinicJWTAuthentication.get_user,
+        nunca resolvendo para o ClinicUser real de B."""
+        login = self._login('gerente@a.com', 'senha-a-123')
+        access = login.data['access']
+        payload = jwt.decode(access, options={'verify_signature': False})
+        payload['user_id'] = str(self.user_b.id)
+        payload['clinic_id'] = str(self.clinic_b.id)
+        forged = jwt.encode(payload, 'segredo-que-nao-e-o-da-aplicacao', algorithm='HS256')
+
+        response = self.client.get('/portal/api/auth/me/', HTTP_AUTHORIZATION=f'Bearer {forged}')
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_edited_payload_without_resigning_rejected(self):
+        """TASK-044 cenário (e) — variante mais realista de forjar um token: o
+        atacante não conhece a SECRET_KEY, então só edita o segmento de payload
+        (base64url) de um JWT legítimo e mantém a assinatura original intacta.
+        A assinatura deixa de corresponder ao novo payload — deve ser rejeitado
+        com AuthenticationFailed (401), nunca resolvendo para o ClinicUser B."""
+        login = self._login('gerente@a.com', 'senha-a-123')
+        access = login.data['access']
+        header_b64, payload_b64, signature_b64 = access.split('.')
+
+        padded = payload_b64 + '=' * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        payload['user_id'] = str(self.user_b.id)
+        payload['clinic_id'] = str(self.clinic_b.id)
+
+        new_payload_b64 = base64.urlsafe_b64encode(
+            json.dumps(payload).encode()
+        ).rstrip(b'=').decode()
+        tampered_token = f'{header_b64}.{new_payload_b64}.{signature_b64}'
+
+        response = self.client.get('/portal/api/auth/me/', HTTP_AUTHORIZATION=f'Bearer {tampered_token}')
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

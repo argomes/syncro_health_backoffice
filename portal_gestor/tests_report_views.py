@@ -86,6 +86,20 @@ class ReportReadViewsTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         mock_read.assert_not_called()
 
+    @patch('portal_gestor.report_reads.read_appointments_report')
+    def test_appointments_other_clinic_gets_404_not_leak_of_existence(self, mock_read):
+        """TASK-044 cenário (b) — a mesma garantia de isolamento validada acima
+        para /patients/ precisa valer também para /appointments/ (o outro path
+        que efetivamente devolve PHI decriptado). Um ClinicUser da clínica B
+        nunca deve conseguir nem confirmar que a sessão de A existe (404, não
+        403), e report_reads nunca deve ser chamado para o registro de outra
+        clínica."""
+        auth_b = self._login('gerente@b.com')
+        response = self.client.get(f'/portal/api/reports/sessions/{self.session.session_id}/appointments/', **auth_b)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_read.assert_not_called()
+
     @patch('portal_gestor.report_reads.read_patients_report')
     def test_permission_denied_from_service_becomes_403(self, mock_read):
         mock_read.side_effect = PermissionDenied('session_expired')

@@ -110,6 +110,25 @@ class CryptoFormatTest(TestCase):
         # Determinístico — mesma chave sempre produz o mesmo id.
         self.assertEqual(crypto.session_key_id(temp_key), crypto.session_key_id(temp_key))
 
+    def test_temp_key_of_one_clinic_cannot_decrypt_dek_of_another_clinic(self):
+        """TASK-044 cenário (f) — as DEKs são por-registro e por-clínica: um
+        dek_encrypted_session gravado pelo gateway da clínica B (cifrado com a
+        TemporaryKey da sessão de B) nunca deve ser decriptável com a
+        TemporaryKey de uma sessão da clínica A, mesmo que ambas as sessões
+        estejam ativas ao mesmo tempo e mesmo se a TemporaryKey de A vazasse
+        (log, erro). Testa a suposição explicitamente — não assume que é óbvio."""
+        temp_key_clinic_a = os.urandom(32)
+        temp_key_clinic_b = os.urandom(32)
+        self.assertNotEqual(temp_key_clinic_a, temp_key_clinic_b)
+
+        dek_of_clinic_b_record = os.urandom(32)
+        dek_encrypted_session_b = _encrypt_field(dek_of_clinic_b_record, temp_key_clinic_b)
+
+        # A "TemporaryKey de A vazou" — um atacante (ou bug de escopo) tenta
+        # usá-la para abrir um registro que pertence à clínica B.
+        with self.assertRaises(crypto.DecryptionError):
+            crypto.decrypt_dek(dek_encrypted_session_b, temp_key_clinic_a)
+
 
 class ReportReadsAccessControlTest(TestCase):
     """Testa os gates de 403 em report_reads, sem tocar em Postgres real."""
@@ -288,3 +307,34 @@ class ReportReadsHappyPathTest(TestCase):
 
         with self.assertRaises(report_reads.ReportUnavailable):
             report_reads.read_patients_report(self.clinic, self.session)
+
+    @patch('portal_gestor.report_reads.clinic_db_connection')
+    def test_row_encrypted_by_another_clinics_session_is_not_readable(self, mock_conn_ctx):
+        """TASK-044 cenário (f), fim-a-fim: mesmo se (por bug de query cross-DB,
+        ou dado copiado indevidamente) uma linha cifrada pelo gateway de OUTRA
+        clínica chegasse ao Python durante a leitura do relatório da clínica A,
+        a TemporaryKey de A nunca decripta a DEK dessa linha — ela foi cifrada
+        com a TemporaryKey da sessão da clínica B. A linha é descartada, nunca
+        aparece no relatório de A."""
+        other_clinic = make_clinic()
+        other_session = services.create_report_session(
+            clinic=other_clinic, created_by=None, entities=['patients'],
+            date_from=timezone.now() - timedelta(days=1), date_to=timezone.now(),
+        )
+        other_temp_key = base64.b64decode(cache.get(services._cache_key(other_session.session_id)))
+        self.assertNotEqual(other_temp_key, self.temp_key)
+
+        dek_of_other_clinic_record = os.urandom(32)
+        dek_encrypted_under_other_clinic = _encrypt_field(dek_of_other_clinic_record, other_temp_key)
+
+        pid = uuid.uuid4()
+        foreign_row = (
+            pid, 'Nome Vazado?', '', '', '', '',
+            dek_encrypted_under_other_clinic,  # cifrada sob a TemporaryKey de OUTRA clínica
+            timezone.now(),
+        )
+        mock_conn_ctx.return_value = self._mock_connection([foreign_row])
+
+        results = report_reads.read_patients_report(self.clinic, self.session)
+
+        self.assertEqual(results, [])

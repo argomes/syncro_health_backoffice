@@ -200,6 +200,72 @@ class ReportSessionServiceTest(TestCase):
         second = services.get_pending_session_key_payload(self.clinic)
         self.assertIsNone(second)
 
+    def test_pending_session_key_payload_never_crosses_clinics_when_concurrent(self):
+        """TASK-044 cenário (c) — get_pending_session_key_payload(clinic) nunca
+        deve retornar a sessão/chave de outra clínica, mesmo quando DUAS
+        clínicas têm sessões PENDING simultaneamente no banco (não uma de cada
+        vez — o bug de escopo clássico é uma query sem filtro de `clinic` que
+        só aparece quando há mais de uma linha candidata)."""
+        clinic_a = make_clinic(name='Clínica A')
+        clinic_b = make_clinic(name='Clínica B')
+        user_a = make_clinic_user(clinic_a, email='gerente@a.com')
+        user_b = make_clinic_user(clinic_b, email='gerente@b.com')
+
+        session_a = services.create_report_session(
+            clinic=clinic_a, created_by=user_a, entities=['patients'],
+            date_from=timezone.now() - timedelta(days=1), date_to=timezone.now(),
+        )
+        session_b = services.create_report_session(
+            clinic=clinic_b, created_by=user_b, entities=['appointments'],
+            date_from=timezone.now() - timedelta(days=2), date_to=timezone.now(),
+        )
+        # As duas sessões existem PENDING ao mesmo tempo no banco quando cada
+        # payload é montado — não há sequenciamento entre create e o assert.
+        self.assertEqual(session_a.status, ReportSessionStatus.PENDING)
+        self.assertEqual(session_b.status, ReportSessionStatus.PENDING)
+
+        payload_a = services.get_pending_session_key_payload(clinic_a)
+        payload_b = services.get_pending_session_key_payload(clinic_b)
+
+        self.assertEqual(payload_a['pending_session_key']['session_id'], str(session_a.session_id))
+        self.assertEqual(payload_b['pending_session_key']['session_id'], str(session_b.session_id))
+        self.assertNotEqual(
+            payload_a['pending_session_key']['session_id'],
+            payload_b['pending_session_key']['session_id'],
+        )
+        self.assertNotEqual(
+            payload_a['pending_session_key']['temp_key_encrypted'],
+            payload_b['pending_session_key']['temp_key_encrypted'],
+        )
+
+    def test_service_logs_never_expose_temp_key_or_public_key_plaintext(self):
+        """Acceptance criteria da TASK-044: nenhuma TemporaryKey/ClinicKey em
+        texto plano em nenhum log capturado durante a suíte. Captura de verdade
+        via assertLogs (não leitura de código) em torno do trecho que decripta
+        e re-cifra a TemporaryKey — o ponto de maior risco de um `logger.debug`
+        acidental vazar a chave crua."""
+        clinic = make_clinic(name='Clínica Log Test')
+        user = make_clinic_user(clinic, email='gerente@logtest.com')
+
+        with self.assertLogs('portal_gestor.services', level='DEBUG') as captured:
+            session = services.create_report_session(
+                clinic=clinic, created_by=user, entities=['patients'],
+                date_from=timezone.now() - timedelta(days=1), date_to=timezone.now(),
+            )
+            payload = services.get_pending_session_key_payload(clinic)
+
+        raw_temp_key_b64 = cache.get(services._cache_key(session.session_id))
+        log_output = '\n'.join(captured.output)
+
+        # A TemporaryKey crua nunca deve aparecer — nem em base64 (formato do
+        # cache), nem em hex, nem o ciphertext RSA que a carrega no payload.
+        self.assertIsNotNone(raw_temp_key_b64)
+        self.assertNotIn(raw_temp_key_b64, log_output)
+        self.assertNotIn(payload['pending_session_key']['temp_key_encrypted'], log_output)
+        # A chave pública RSA da clínica (equivalente de "ClinicKey" neste
+        # contexto de emissão) também não deve vazar em texto plano.
+        self.assertNotIn(clinic.public_key_pem.strip(), log_output)
+
     def test_oldest_pending_session_delivered_first(self):
         older = services.create_report_session(
             clinic=self.clinic, created_by=self.user, entities=['patients'],
