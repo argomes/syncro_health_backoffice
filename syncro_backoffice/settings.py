@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     'support',
     'integrations',
     'portal_gestor',
+    'tiss',
 ]
 
 MIDDLEWARE = [
@@ -353,3 +354,33 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # ADICIONE ESTA LINHA:
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# TASK-BO-08 — módulo TISS/SOAP (Orizon e outras operadoras)
+#
+# Chave Fernet para cifrar login/senha de operadora em repouso
+# (tiss/crypto.py). Gerar com `Fernet.generate_key()`. Em dev sem valor
+# configurado, cai num valor fixo de placeholder (NUNCA usar em produção —
+# lá é obrigatório setar TISS_FERNET_KEY no .env real).
+TISS_FERNET_KEY = env(
+    'TISS_FERNET_KEY',
+    default='Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+)
+
+# Diretório com os XSDs oficiais ANS (tissV4_02_00.xsd e includes) usados
+# por tiss/xml_validator.py para validar o lote antes do envio SOAP. Fonte
+# de verdade fora deste repositório — apontar para onde a documentação
+# oficial ANS (PadroTISSComunicao) foi baixada no ambiente.
+TISS_XSD_DIR = env(
+    'TISS_XSD_DIR',
+    default=str(
+        BASE_DIR.parent
+        / 'Documents'
+        / 'PadroTISSComunicao202505'
+        / 'Padrão TISS Comunicação 040200'
+    ),
+)
+
+# Quando True, tiss/soap_client.py intercepta a chamada SOAP e devolve uma
+# resposta fixa (sucesso ou erro) em vez de bater na rede — permite testar
+# o fluxo completo de envio de lote sem credenciais/sandbox de operadora real.
+TISS_SOAP_MOCK = env.bool('TISS_SOAP_MOCK', default=DEBUG)

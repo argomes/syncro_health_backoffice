@@ -47,6 +47,7 @@ urlpatterns = [
     path('api/metrics/', include('metrics.urls')),
     path('api/accounts/', include('accounts.urls')),
     path('api/support/', include('support.urls')),
+    path('api/tiss/', include('tiss.urls')),
 
     # portal_gestor — login de ClinicUser (admin/gerente da clínica), auth separada
     # de SupportUser. TASK-042a — base para TASK-042/043 (emissão/leitura de relatórios).
