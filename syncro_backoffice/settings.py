@@ -16,6 +16,14 @@ DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
 
+# Railway (e qualquer VPS atrás de nginx/Caddy/Traefik) termina TLS na borda
+# e repassa a requisição pro gunicorn em HTTP puro — sem isso, request.is_secure()
+# sempre retorna False mesmo servindo HTTPS de verdade, o que quebra o cookie
+# Secure do portal_gestor (PORTAL_COOKIE_SECURE acima) e validação de CSRF
+# sobre HTTPS. Seguro em dev também: runserver não popula X-Forwarded-Proto,
+# então isso não afeta http://localhost local.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 # Controla o atributo Secure dos cookies httpOnly do portal_gestor (TASK-046)
 # de forma independente de DEBUG — DEBUG também liga CORS_ALLOW_ALL_ORIGINS e
 # outras coisas, então usar DEBUG como proxy pra "estamos em HTTPS?" acopla

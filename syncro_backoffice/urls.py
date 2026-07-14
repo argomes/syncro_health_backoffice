@@ -1,5 +1,16 @@
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import path, include
+
+
+def health_check(request):
+    """
+    Liveness check pro Dockerfile/Railway/qualquer orquestrador — de propósito
+    não toca banco/redis (health check não deve falhar por uma dependência
+    lenta/instável quando o processo em si está de pé; isso é o que
+    distingue liveness de readiness). Sem auth, sem custo.
+    """
+    return JsonResponse({'status': 'ok'})
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from clinics.views import issue_service_token, get_license_info
 from billing.webhook_views import asaas_webhook
@@ -21,6 +32,7 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
     throttle_classes = [LoginRateThrottle]
 
 urlpatterns = [
+    path('health/', health_check, name='health_check'),
     path('admin/', admin.site.urls),
     path('api/auth/login/', ThrottledTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),

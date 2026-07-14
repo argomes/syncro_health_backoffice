@@ -1,0 +1,31 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+
+# Nunca deve ir pra dentro da imagem — segredos/dev only
+.env
+.env.local
+.env.*.local
+.env.production
+.service_jwt_private.pem
+.service_jwt_public.pem
+*.pem
+
+# Banco/artefatos locais — a imagem nunca deve carregar dado de dev
+db.sqlite3
+*.sqlite3
+staticfiles/
+media/
+.coverage
+htmlcov/
+
+# Infra de homologação local (TASK-053) — não faz sentido dentro da imagem
+docker/postgres-init/
+docker-compose.yml
+docker-compose.prod.yml
+
+.claude
