@@ -149,4 +149,50 @@ class TicketMessageAPITest(TestCase):
             HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertGreaterEqual(len(response.data), 1)
+        results = response.data.get('results', response.data)
+        self.assertGreaterEqual(len(results), 1)
+
+    def test_cross_tenant_message_access_denied(self):
+        """BO-SEC-002: Edge da Clínica A não pode ler mensagens de ticket da Clínica B."""
+        clinic_b = make_clinic(name='Clínica B')
+        support_user_b = SupportUser.objects.create_user(
+            username='support_b', email='b@test.com', password='pass', role='support'
+        )
+        ticket_b = Ticket.objects.create(
+            clinic=clinic_b,
+            created_by=support_user_b,
+            title='Ticket da clínica B',
+            description='Dado sensível da clínica B',
+        )
+        TicketMessage.objects.create(
+            ticket=ticket_b,
+            author=support_user_b,
+            message='Mensagem confidencial da clínica B',
+        )
+
+        # Edge autenticado com license_key da Clínica A tenta ler mensagens do ticket da Clínica B
+        response = self.client.get(
+            f'/api/support/tickets/{ticket_b.id}/messages/',
+            HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
+        )
+        # A view não deve vazar nenhuma mensagem de outro tenant: lista vazia,
+        # nunca os dados confidenciais da Clínica B.
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get('results', response.data)
+        self.assertEqual(len(results), 0)
+
+    def test_own_clinic_messages_still_accessible(self):
+        """Edge da própria clínica continua acessando suas mensagens normalmente."""
+        TicketMessage.objects.create(
+            ticket=self.ticket,
+            author=self.support_user,
+            message='Mensagem da própria clínica',
+        )
+
+        response = self.client.get(
+            f'/api/support/tickets/{self.ticket.id}/messages/',
+            HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get('results', response.data)
+        self.assertGreaterEqual(len(results), 1)

@@ -59,7 +59,28 @@ class TicketMessageViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         ticket_id = self.kwargs.get('ticket_id')
-        return TicketMessage.objects.filter(ticket_id=ticket_id)
+
+        # Se autenticado via license_key (Edge), restringe às mensagens de
+        # tickets da própria clínica.
+        if hasattr(self.request, 'clinic') and self.request.clinic:
+            return TicketMessage.objects.filter(
+                ticket_id=ticket_id,
+                ticket__clinic=self.request.clinic,
+            )
+
+        # Se autenticado via JWT (Admin), acesso irrestrito.
+        user = self.request.user
+        if user and hasattr(user, 'role') and user.role == 'admin':
+            return TicketMessage.objects.filter(ticket_id=ticket_id)
+
+        # Support user só vê mensagens de tickets de clínicas às quais tem acesso.
+        if user and user.is_authenticated:
+            return TicketMessage.objects.filter(
+                ticket_id=ticket_id,
+                ticket__clinic__admin_accesses__support_user=user,
+            ).distinct()
+
+        return TicketMessage.objects.none()
 
     def get_serializer_class(self):
         if self.action in ['create']:

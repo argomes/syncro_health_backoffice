@@ -62,9 +62,13 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='generate')
     def generate(self, request):
         """
-        Gera faturas mensais para todas as clínicas ativas que ainda não
+        Gera faturas mensais para as clínicas ativas que ainda não
         têm fatura na competência informada (ou mês atual se omitida).
+
+        Isolamento de tenant: usuários não-ADMIN só podem gerar faturas
+        para clínicas às quais têm ClinicAccess ativo.
         """
+        user = request.user
         competencia = request.data.get('competencia')
         if not competencia:
             today = date.today()
@@ -82,6 +86,13 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
         due_date = date(int(year), int(month), 1) + timedelta(days=30)
         active_clinics = Clinic.objects.filter(status=ClinicStatus.ACTIVE)
+
+        if user.role != SupportUser.Role.ADMIN:
+            allowed_clinic_ids = ClinicAccess.objects.filter(
+                support_user=user,
+                revoked_at__isnull=True,
+            ).values_list('clinic_id', flat=True)
+            active_clinics = active_clinics.filter(id__in=allowed_clinic_ids)
 
         created, skipped = 0, 0
         for clinic in active_clinics:
