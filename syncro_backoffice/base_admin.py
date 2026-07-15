@@ -38,3 +38,37 @@ class BaseStackedInline(StackedInline):
         models.CharField: {"widget": UnfoldAdminTextInputWidget},
         models.TextField: {"widget": UnfoldAdminTextareaWidget},
     }
+
+
+class TenantScopedAdminMixin:
+    """
+    Aplica no Django Admin o mesmo isolamento de tenant já usado nas APIs
+    REST (ex: billing/views.py::InvoiceViewSet, tiss/views.py::_allowed_clinic_ids):
+    superuser e SupportUser com role ADMIN veem tudo; os demais só veem
+    registros de clínicas às quais têm ClinicAccess ativo.
+
+    Sem isso, conceder `view_*` a um grupo não-ADMIN (ex: "Analista
+    Operacional", TASK-056) vaza dados — incluindo PHI, no caso do app
+    `tiss` — de TODAS as clínicas no /admin/, mesmo a API estando isolada.
+
+    `clinic_lookup` define o caminho de FK até `clinics.Clinic` a partir do
+    model do ModelAdmin (ex.: 'clinic', 'guia__clinic') para modelos que não
+    têm FK direta.
+    """
+    clinic_lookup = 'clinic'
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+
+        user = request.user
+        if user.is_superuser:
+            return qs
+        if getattr(user, 'role', None) == 'admin':
+            return qs
+
+        from accounts.models import ClinicAccess
+        allowed_clinic_ids = ClinicAccess.objects.filter(
+            support_user=user,
+            revoked_at__isnull=True,
+        ).values_list('clinic_id', flat=True)
+        return qs.filter(**{f'{self.clinic_lookup}__id__in': allowed_clinic_ids})

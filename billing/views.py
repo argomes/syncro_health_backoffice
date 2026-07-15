@@ -124,12 +124,25 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='mark-overdue')
     def mark_overdue(self, request):
-        """Marca como vencidas todas as faturas pendentes com due_date no passado."""
+        """
+        Marca como vencidas todas as faturas pendentes com due_date no passado.
+
+        Isolamento de tenant: mesma regra de generate/get_queryset — usuários
+        não-ADMIN só marcam como vencidas as faturas de clínicas às quais têm
+        ClinicAccess ativo (BO-SEC-010).
+        """
+        user = request.user
         today = date.today()
-        updated = Invoice.objects.filter(
-            status=InvoiceStatus.PENDING,
-            due_date__lt=today,
-        ).update(status=InvoiceStatus.OVERDUE)
+        qs = Invoice.objects.filter(status=InvoiceStatus.PENDING, due_date__lt=today)
+
+        if user.role != SupportUser.Role.ADMIN:
+            allowed_clinic_ids = ClinicAccess.objects.filter(
+                support_user=user,
+                revoked_at__isnull=True,
+            ).values_list('clinic_id', flat=True)
+            qs = qs.filter(clinic_id__in=allowed_clinic_ids)
+
+        updated = qs.update(status=InvoiceStatus.OVERDUE)
         return Response({'marked_overdue': updated})
     
 

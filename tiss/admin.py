@@ -2,13 +2,13 @@ from django.contrib import admin
 from django.http import HttpResponse
 from django.utils.html import format_html
 
-from syncro_backoffice.base_admin import BaseAdmin
+from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa
 from .services import enviar_lote, TISSServiceError
 
 
 @admin.register(TISSOperatorConfig)
-class TISSOperatorConfigAdmin(BaseAdmin):
+class TISSOperatorConfigAdmin(TenantScopedAdminMixin, BaseAdmin):
     # login_encrypted/senha_encrypted NUNCA aparecem em list_display nem em
     # fields — só existem como TextField cifrado, não editável no admin
     # (edição é via os campos write-only `login`/`senha` do serializer da API).
@@ -20,7 +20,7 @@ class TISSOperatorConfigAdmin(BaseAdmin):
 
 
 @admin.register(TISSLote)
-class TISSLoteAdmin(BaseAdmin):
+class TISSLoteAdmin(TenantScopedAdminMixin, BaseAdmin):
     list_display = ('numero_lote', 'clinic', 'competencia', 'status', 'protocolo', 'created_at')
     list_filter = ('status', 'competencia', 'clinic')
     search_fields = ('numero_lote', 'protocolo', 'clinic__name')
@@ -57,7 +57,7 @@ class TISSLoteAdmin(BaseAdmin):
 
 
 @admin.register(TISSGuia)
-class TISSGuiaAdmin(BaseAdmin):
+class TISSGuiaAdmin(TenantScopedAdminMixin, BaseAdmin):
     list_display = ('numero', 'clinic', 'competencia', 'status_colorido', 'valor', 'created_at')
     list_filter = ('status', 'competencia', 'clinic')
     search_fields = ('numero', 'appointment_id', 'clinic__name')
@@ -77,7 +77,10 @@ class TISSGuiaAdmin(BaseAdmin):
 
 
 @admin.register(TISSGlosa)
-class TISSGlosaAdmin(BaseAdmin):
+class TISSGlosaAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # TISSGlosa não tem FK direta a Clinic (só via guia) — ver docstring do
+    # model, isolamento propositalmente indireto.
+    clinic_lookup = 'guia__clinic'
     list_display = ('codigo', 'guia', 'valor_glosado', 'recurso_enviado', 'created_at')
     list_filter = ('codigo', 'recurso_enviado')
     search_fields = ('codigo', 'guia__numero')

@@ -5,7 +5,7 @@ from rest_framework.test import APIClient
 from rest_framework import status
 
 from clinics.models import Clinic, ClinicStatus, Plan, ProvisioningStatus
-from accounts.models import SupportUser
+from accounts.models import SupportUser, ClinicAccess
 from .models import Ticket, TicketMessage
 
 
@@ -110,6 +110,57 @@ class TicketAPITest(TestCase):  # ✅ TestCase, não APITestCase
         )
         self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
 
+    def test_create_ticket_mass_assignment_denied(self):
+        """
+        BO-SEC-009: support user com ClinicAccess só na Clínica A não pode
+        criar ticket em nome da Clínica B via payload (`clinic` gravável no
+        TicketCreateSerializer + perform_create sem checagem = mass assignment).
+        """
+        clinic_b = make_clinic(name='Clínica B Mass Assignment')
+        ClinicAccess.objects.create(
+            support_user=self.support_user,
+            clinic=self.clinic,
+            role=ClinicAccess.AccessRole.VIEWER,
+            granted_by=self.support_user,
+        )
+        self.client.force_authenticate(user=self.support_user)
+
+        response = self.client.post(
+            '/api/support/tickets/',
+            {
+                'clinic': str(clinic_b.id),
+                'title': 'Ticket forjado para clínica B',
+                'description': 'Tentativa de IDOR',
+                'priority': 'high',
+            },
+            format='json',
+        )
+        self.assertIn(response.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_400_BAD_REQUEST))
+        self.assertFalse(Ticket.objects.filter(clinic=clinic_b).exists())
+
+    def test_create_ticket_own_clinic_allowed(self):
+        """Support user com ClinicAccess na própria clínica continua criando ticket normalmente via JWT."""
+        ClinicAccess.objects.create(
+            support_user=self.support_user,
+            clinic=self.clinic,
+            role=ClinicAccess.AccessRole.VIEWER,
+            granted_by=self.support_user,
+        )
+        self.client.force_authenticate(user=self.support_user)
+
+        response = self.client.post(
+            '/api/support/tickets/',
+            {
+                'clinic': str(self.clinic.id),
+                'title': 'Ticket legítimo',
+                'description': 'Descrição',
+                'priority': 'low',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(Ticket.objects.filter(clinic=self.clinic, title='Ticket legítimo').exists())
+
 
 class TicketMessageAPITest(TestCase):
     def setUp(self):
@@ -196,3 +247,29 @@ class TicketMessageAPITest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         results = response.data.get('results', response.data)
         self.assertGreaterEqual(len(results), 1)
+
+    def test_cross_tenant_message_create_denied(self):
+        """
+        BO-SEC-008: Edge da Clínica A não pode POSTar mensagem em ticket da
+        Clínica B — o create do TicketMessageCreateSerializer antes confiava
+        cegamente no ticket_id da URL, sem checar acesso à clínica do ticket.
+        """
+        clinic_b = make_clinic(name='Clínica B Create')
+        support_user_b = SupportUser.objects.create_user(
+            username='support_b_create', email='bc@test.com', password='pass', role='support'
+        )
+        ticket_b = Ticket.objects.create(
+            clinic=clinic_b,
+            created_by=support_user_b,
+            title='Ticket da clínica B',
+            description='Dado sensível da clínica B',
+        )
+
+        response = self.client.post(
+            f'/api/support/tickets/{ticket_b.id}/messages/',
+            {'message': 'Mensagem forjada via IDOR'},
+            format='json',
+            HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(ticket_b.messages.count(), 0)

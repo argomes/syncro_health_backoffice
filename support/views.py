@@ -1,8 +1,10 @@
 from django.utils import timezone
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
+from accounts.models import ClinicAccess, SupportUser
 from .models import Ticket, TicketMessage
 from .serializers import TicketSerializer, TicketMessageSerializer, TicketCreateSerializer, TicketMessageCreateSerializer
 from .permissions import IsAuthenticatedByLicenseKeyOrJWT
@@ -39,7 +41,36 @@ class TicketViewSet(viewsets.ModelViewSet):
         return TicketSerializer
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        request = self.request
+        clinic = serializer.validated_data.get('clinic')
+
+        # BO-SEC-009: `clinic` é gravável em TicketCreateSerializer — sem essa
+        # checagem, qualquer usuário autenticado cria ticket em nome de
+        # clínica arbitrária (mass assignment / IDOR).
+        if hasattr(request, 'clinic') and request.clinic:
+            # Edge Gateway (license_key) só cria ticket para a própria clínica.
+            if clinic is not None and clinic.id != request.clinic.id:
+                raise PermissionDenied('Sem acesso a esta clínica.')
+            serializer.save(clinic=request.clinic, created_by=None)
+            return
+
+        user = request.user
+        if user and hasattr(user, 'role') and user.role == SupportUser.Role.ADMIN:
+            serializer.save(created_by=user)
+            return
+
+        if user and user.is_authenticated:
+            has_access = clinic is not None and ClinicAccess.objects.filter(
+                support_user=user,
+                clinic=clinic,
+                revoked_at__isnull=True,
+            ).exists()
+            if not has_access:
+                raise PermissionDenied('Sem acesso a esta clínica.')
+            serializer.save(created_by=user)
+            return
+
+        raise PermissionDenied('Sem acesso a esta clínica.')
 
     @action(detail=True, methods=['post'])
     def resolve(self, request, pk=None):
