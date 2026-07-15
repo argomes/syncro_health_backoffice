@@ -1,5 +1,5 @@
 import uuid
-from django.contrib.auth.hashers import make_password, check_password
+from django.contrib.auth.hashers import make_password, check_password, is_password_usable
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.core.exceptions import ValidationError
@@ -161,6 +161,28 @@ class ClinicUser(models.Model):
             # LDAP não implementado ainda — nunca cai em fallback silencioso para local.
             return False
         return check_password(raw_password, self.password)
+
+    def has_usable_password(self):
+        """
+        Espelha AbstractBaseUser.has_usable_password() — exigido pelo fluxo de
+        reset de senha (TASK-BO-12, accounts/password_reset_clinic.py) pra não
+        oferecer reset a ClinicUser sem senha local definida ainda (provisionado
+        mas nunca ativado) nem a contas LDAP (senha não gerenciada aqui).
+        """
+        if self.auth_provider != self.AuthProvider.LOCAL:
+            return False
+        return bool(self.password) and is_password_usable(self.password)
+
+    def get_email_field_name(self):
+        """
+        Duck-typing exigido por django.contrib.auth.tokens.PasswordResetTokenGenerator
+        (Django 6 passou a incluir o e-mail no hash do token, pra invalidar
+        links de reset pendentes se o e-mail mudar antes do usuário clicar —
+        ver accounts/password_reset_clinic.py). AbstractBaseUser expõe isso
+        como classmethod; aqui como instance method normal, tanto faz pro
+        token generator (só chama user.get_email_field_name()).
+        """
+        return 'email'
 
     # Duck-typing exigido por DRF (throttling, permissions) — ClinicUser não é
     # AbstractBaseUser, mas request.user precisa expor esses dois atributos.

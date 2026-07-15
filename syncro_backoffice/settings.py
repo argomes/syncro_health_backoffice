@@ -396,3 +396,43 @@ TISS_XSD_DIR = env(
 # resposta fixa (sucesso ou erro) em vez de bater na rede — permite testar
 # o fluxo completo de envio de lote sem credenciais/sandbox de operadora real.
 TISS_SOAP_MOCK = env.bool('TISS_SOAP_MOCK', default=DEBUG)
+
+# TASK-BO-12 — Email transacional via ZeptoMail (Zoho SMTP relay), usado hoje
+# só pelo fluxo de "esqueci minha senha" (SupportUser e ClinicUser — ver
+# accounts/password_reset_views.py). django.core.mail (SMTP built-in do
+# Django) é suficiente para esse volume; django-anymail não se justifica
+# aqui (só compensaria se precisássemos de tracking de bounce/webhook).
+#
+# Mesmo padrão de fail-fast já usado para CACHE_URL e TISS_FERNET_KEY (ver
+# acima): em dev (DEBUG=True) cai em defaults de sandbox que não mandam
+# email de verdade sem credencial; em produção (DEBUG=False), qualquer
+# EMAIL_HOST_USER/EMAIL_HOST_PASSWORD ausente quebra o boot — a alternativa
+# seria o Django tentar autenticar no SMTP sem credencial e falhar em
+# runtime no meio de um fluxo de reset de senha do usuário, silenciosamente
+# do ponto de vista de quem sobe o processo.
+EMAIL_BACKEND = env(
+    'EMAIL_BACKEND',
+    default='django.core.mail.backends.console.EmailBackend' if DEBUG else 'django.core.mail.backends.smtp.EmailBackend',
+)
+EMAIL_HOST = env('EMAIL_HOST', default='smtp.zeptomail.com' if DEBUG else '')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='naoresponda@syncrohealth.com.br' if DEBUG else '')
+
+if not DEBUG and (not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD or not EMAIL_HOST or not DEFAULT_FROM_EMAIL):
+    raise RuntimeError(
+        'Configuração de email incompleta com DEBUG=False. O fluxo de reset '
+        'de senha (SupportUser e ClinicUser, TASK-BO-12) depende de '
+        'EMAIL_HOST, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD e '
+        'DEFAULT_FROM_EMAIL configurados via env — sem isso, o Django '
+        'tentaria autenticar no SMTP sem credencial e o reset de senha '
+        'falharia silenciosamente em produção. Configure as variáveis do '
+        'ZeptoMail (SMTP relay do Zoho, token gerado no painel Mail Agent).'
+    )
+# DEBUG=True sem EMAIL_HOST_USER/PASSWORD: usa o console backend (imprime o
+# email no stdout do runserver) — permite testar o fluxo de reset sem
+# credencial real do ZeptoMail. Para testar contra o sandbox real do
+# ZeptoMail em dev, basta setar EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+# e as credenciais no .env local.

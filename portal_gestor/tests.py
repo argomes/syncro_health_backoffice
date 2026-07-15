@@ -353,13 +353,18 @@ class CacheBackendProductionGuardTest(TestCase):
         self.assertIn('CACHE_URL', result.stderr)
 
     def test_debug_false_with_cache_url_boots(self):
-        # TISS_FERNET_KEY também é exigido com DEBUG=False (ver
-        # TissFernetKeyProductionGuardTest) — setar aqui pra isolar o que
-        # este teste quer provar (o guard de CACHE_URL).
+        # TISS_FERNET_KEY e EMAIL_* também são exigidos com DEBUG=False (ver
+        # TissFernetKeyProductionGuardTest e TASK-BO-12 em settings.py) —
+        # setar aqui pra isolar o que este teste quer provar (o guard de
+        # CACHE_URL).
         result = self._boot_with_env({
             'DEBUG': 'False',
             'CACHE_URL': 'redis://localhost:6379/1',
             'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+            'EMAIL_HOST': 'smtp.zeptomail.com',
+            'EMAIL_HOST_USER': 'emailapikey',
+            'EMAIL_HOST_PASSWORD': 'placeholder-token',
+            'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -407,6 +412,10 @@ class TissFernetKeyProductionGuardTest(TestCase):
             'DEBUG': 'False',
             'CACHE_URL': 'redis://localhost:6379/1',
             'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+            'EMAIL_HOST': 'smtp.zeptomail.com',
+            'EMAIL_HOST_USER': 'emailapikey',
+            'EMAIL_HOST_PASSWORD': 'placeholder-token',
+            'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 
