@@ -51,10 +51,25 @@ class AsaasClient:
             logger.error("AsaasClient: erro ao criar cliente %s. Erro: %s", name, str(exc))
             raise RuntimeError(f"Erro ao criar cliente no ASAAS: {str(exc)}") from exc
 
-    def create_subscription(self, customer_id: str, value: float, billing_type: str = 'PIX', cycle: str = 'MONTHLY') -> str:
+    def create_subscription(
+        self,
+        customer_id: str,
+        value: float,
+        billing_type: str = 'PIX',
+        cycle: str = 'MONTHLY',
+        description: str = '',
+        external_reference: str = '',
+    ) -> str:
         """
         Cria uma assinatura recorrente no ASAAS.
         billing_type: 'PIX', 'BOLETO' ou 'CREDIT_CARD'
+
+        `description` deve ser sempre um texto genérico de plano (ex: "Plano
+        Syncro Health — mensalidade") — nunca deve conter dado de paciente
+        ou informação identificável específica além do necessário. LGPD:
+        nenhum campo de paciente é enviado ao Asaas.
+        `external_reference` deve ser o UUID da Clinic (não nome em texto
+        livre), usado para correlação sem vazar dado sensível.
         """
         if self.is_mock:
             mock_sub_id = f"sub_mock_{customer_id}"
@@ -69,6 +84,10 @@ class AsaasClient:
             'nextDueDate': next_due,
             'cycle': cycle,
         }
+        if description:
+            payload['description'] = description
+        if external_reference:
+            payload['externalReference'] = external_reference
 
         url = f"{self.api_url}/v3/subscriptions"
         try:
@@ -80,3 +99,35 @@ class AsaasClient:
         except Exception as exc:
             logger.error("AsaasClient: erro ao criar assinatura para cliente %s. Erro: %s", customer_id, str(exc))
             raise RuntimeError(f"Erro ao criar assinatura no ASAAS: {str(exc)}") from exc
+
+    def update_subscription_value(self, subscription_id: str, new_value: float) -> bool:
+        """
+        Atualiza o valor de uma assinatura existente no ASAAS.
+        PUT /v3/subscriptions/{id}
+
+        O Asaas não reajusta assinaturas automaticamente — cobra sempre o
+        mesmo `value` até esse endpoint ser chamado. Usado pelo job de
+        reajuste de preço (fim do desconto de lançamento).
+        """
+        if self.is_mock:
+            logger.info(
+                "AsaasClient (MOCK): Atualizando assinatura %s -> value=%s",
+                subscription_id,
+                new_value,
+            )
+            return True
+
+        payload = {'value': float(new_value)}
+        url = f"{self.api_url}/v3/subscriptions/{subscription_id}"
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.put(url, json=payload, headers=self.headers)
+                response.raise_for_status()
+                return True
+        except Exception as exc:
+            logger.error(
+                "AsaasClient: erro ao atualizar assinatura %s. Erro: %s",
+                subscription_id,
+                str(exc),
+            )
+            raise RuntimeError(f"Erro ao atualizar assinatura no ASAAS: {str(exc)}") from exc
