@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.db import models
-from syncro_backoffice.base_admin import BaseAdmin
+from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 from unfold.admin import ModelAdmin as UnfoldModelAdmin
 from unfold.widgets import UnfoldAdminTextareaWidget, UnfoldAdminTextInputWidget
 from .models import SupportUser, ClinicAccess, ClinicUser
@@ -25,7 +25,13 @@ class SupportUserAdmin(UnfoldModelAdmin, UserAdmin):
 
 
 @admin.register(ClinicAccess)
-class ClinicAccessAdmin(BaseAdmin):
+class ClinicAccessAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # Sem permissão concedida a não-ADMIN hoje, mas mesmo gap estrutural dos
+    # demais ModelAdmin ligados a Clinic: um não-ADMIN com view/change
+    # concedida futuramente só deve enxergar/gerenciar acessos das clínicas
+    # às quais ele próprio tem ClinicAccess ativo (nunca de todas).
+    clinic_lookup = 'clinic'
+
     list_display = ('support_user', 'clinic', 'role', 'is_active', 'granted_at')
     list_filter = ('role', 'granted_at', 'revoked_at')
     search_fields = ('support_user__username', 'clinic__name')
@@ -42,11 +48,16 @@ class ClinicAccessAdmin(BaseAdmin):
 
 
 @admin.register(ClinicUser)
-class ClinicUserAdmin(BaseAdmin):
+class ClinicUserAdmin(TenantScopedAdminMixin, BaseAdmin):
     """
     Cadastro/gestão de usuários da clínica (portal_gestor) pelo suporte Syncro.
     A senha nunca é exibida — só pode ser redefinida (write-only), nunca lida.
+
+    Sem permissão concedida a não-ADMIN hoje, mas mesmo gap estrutural: dado
+    de usuário final da clínica não deve vazar entre clínicas via /admin/.
     """
+    clinic_lookup = 'clinic'
+
     list_display = ('email', 'name', 'clinic', 'auth_provider', 'is_active', 'last_login')
     list_filter = ('auth_provider', 'is_active', 'clinic')
     search_fields = ('email', 'name', 'clinic__name')
