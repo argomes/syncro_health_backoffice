@@ -3,13 +3,19 @@ from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from datetime import timedelta
-from syncro_backoffice.base_admin import BaseAdmin
+from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 
 from .models import SystemHeartbeat, SystemLog
 
 
 @admin.register(SystemHeartbeat)
-class SystemHeartbeatAdmin(BaseAdmin):
+class SystemHeartbeatAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # Sem isso, um SupportUser não-admin com view_systemheartbeat concedida
+    # via grupo (ex.: "Analista Operacional", TASK-056) via grupo enxergava
+    # heartbeats de TODAS as clínicas no /admin/, não só as que tem
+    # ClinicAccess.
+    clinic_lookup = 'clinic'
+
     list_display = ('clinic_name', 'gateway_version', 'db_size_mb', 'pending_sync', 'sync_status', 'last_seen_status')
     list_filter = ('sync_connected',)
     search_fields = ('clinic__name',)
@@ -52,7 +58,12 @@ class LastSeenFilter(admin.SimpleListFilter):
 
 
 @admin.register(SystemLog)
-class SystemLogAdmin(BaseAdmin):
+class SystemLogAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # Mesmo gap do SystemHeartbeatAdmin acima: SystemLog pode conter contexto
+    # operacional sensível por clínica, então isolamento por ClinicAccess é
+    # obrigatório para não-ADMIN.
+    clinic_lookup = 'clinic'
+
     list_display = ('clinic_name', 'level_badge', 'message_short', 'occurred_at')
     list_filter = ('level', LastSeenFilter)
     search_fields = ('clinic__name', 'message')

@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from syncro_backoffice.base_admin import BaseAdmin, BaseTabularInline
+from syncro_backoffice.base_admin import BaseAdmin, BaseTabularInline, TenantScopedAdminMixin
 from .models import Ticket, TicketMessage
 
 
@@ -13,8 +13,16 @@ class TicketMessageInline(BaseTabularInline):
 
 
 @admin.register(Ticket)
-class TicketAdmin(BaseAdmin):
-    """Admin para gerenciar tickets de suporte"""
+class TicketAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    Admin para gerenciar tickets de suporte.
+
+    Tickets carregam descrição/contexto de suporte de uma clínica
+    específica — sem isolamento, um SupportUser não-admin com a permissão
+    já concedida ao grupo "Analista Operacional" (TASK-056) veria tickets de
+    TODAS as clínicas no /admin/.
+    """
+    clinic_lookup = 'clinic'
 
     list_display = [
         'title_truncated',
@@ -118,8 +126,14 @@ class TicketAdmin(BaseAdmin):
 
 
 @admin.register(TicketMessage)
-class TicketMessageAdmin(BaseAdmin):
-    """Admin para gerenciar mensagens de tickets"""
+class TicketMessageAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    Admin para gerenciar mensagens de tickets.
+
+    TicketMessage não tem FK direta a Clinic (só via `ticket`) — mesmo
+    padrão de FK indireta do TISSGlosaAdmin (`guia__clinic`).
+    """
+    clinic_lookup = 'ticket__clinic'
 
     list_display = ['ticket', 'author', 'message_preview', 'created_at']
     list_filter = ['ticket__status', 'created_at', 'author']
