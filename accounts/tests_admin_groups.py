@@ -12,7 +12,7 @@ from django.urls import reverse
 
 from clinics.models import Clinic, ClinicStatus, Plan
 
-from .models import SupportUser
+from .models import ClinicAccess, SupportUser
 
 
 def make_clinic(**overrides):
@@ -99,6 +99,10 @@ class ClinicAdminSensitiveFieldsTest(TestCase):
             is_staff=True,
         )
         self.analyst.groups.add(Group.objects.get(name='Analista Operacional'))
+        # TASK-BO-11 fix: ClinicAdmin agora usa TenantScopedAdminMixin, então
+        # o analista só enxerga clínicas com ClinicAccess ativo — sem isso,
+        # os testes abaixo (que dependem de acessar self.clinic) 404/302.
+        ClinicAccess.objects.create(support_user=self.analyst, clinic=self.clinic, role='viewer')
 
         self.client = Client()
         self.client.force_login(self.analyst)

@@ -1,10 +1,19 @@
 from django.contrib import admin, messages
-from syncro_backoffice.base_admin import BaseAdmin
+from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 from .models import Clinic, PROMOTIONAL_SLOTS
 
 
 @admin.register(Clinic)
-class ClinicAdmin(BaseAdmin):
+class ClinicAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # TASK-BO-11 fix: sem isso, um SupportUser não-admin com permissão
+    # view_clinic/change_clinic concedida via grupo (ex.: "Analista
+    # Operacional", TASK-056) via grupo enxergava e podia agir sobre TODAS
+    # as clínicas no /admin/, não só as que tem ClinicAccess — incluindo a
+    # action `create_asaas_subscription`, que dispara cobrança recorrente
+    # real via Asaas. `Clinic` é o próprio model "clínica" (não tem FK para
+    # outro model de clínica), por isso o filtro é direto por PK.
+    clinic_lookup = 'pk'
+
     # TASK-056: license_key, public_key_pem e db_password_encrypted são
     # segredos de credenciamento/criptografia da clínica — nunca expostos a
     # grupos não-superuser (ex.: Analista Operacional), mesmo tendo

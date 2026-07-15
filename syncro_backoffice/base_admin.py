@@ -53,7 +53,9 @@ class TenantScopedAdminMixin:
 
     `clinic_lookup` define o caminho de FK até `clinics.Clinic` a partir do
     model do ModelAdmin (ex.: 'clinic', 'guia__clinic') para modelos que não
-    têm FK direta.
+    têm FK direta. Quando o próprio model do ModelAdmin É `clinics.Clinic`
+    (ex.: `ClinicAdmin`), use `clinic_lookup = 'pk'` — o filtro passa a ser
+    direto por PK em vez de atravessar uma FK.
     """
     clinic_lookup = 'clinic'
 
@@ -71,4 +73,6 @@ class TenantScopedAdminMixin:
             support_user=user,
             revoked_at__isnull=True,
         ).values_list('clinic_id', flat=True)
+        if self.clinic_lookup == 'pk':
+            return qs.filter(pk__in=allowed_clinic_ids)
         return qs.filter(**{f'{self.clinic_lookup}__id__in': allowed_clinic_ids})
