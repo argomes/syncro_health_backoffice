@@ -1,5 +1,8 @@
 import uuid
+from django.core.exceptions import ValidationError
 from django.db import models
+
+PROMOTIONAL_SLOTS = 30
 
 
 class Plan(models.TextChoices):
@@ -36,6 +39,30 @@ class Clinic(models.Model):
     asaas_customer_id = models.CharField(max_length=50, blank=True, null=True, unique=True)
     asaas_subscription_id = models.CharField(max_length=50, blank=True, null=True, unique=True)
 
+    # TASK-BO-11: cobrança recorrente — plano único R$199,90, com dois
+    # descontos possíveis "por cima" (nunca self-service, sempre decisão
+    # manual de quem faz onboarding/CS no Django Admin).
+    subscription_started_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Data de início da assinatura recorrente no Asaas (base para o aniversário de 12 meses).'
+    )
+    preco_promocional = models.BooleanField(
+        default=False,
+        help_text='Desconto de lançamento (R$99,90/mês no 1º ano) — limitado às 30 primeiras clínicas.'
+    )
+    desconto_fidelidade_ano2 = models.BooleanField(
+        default=False,
+        help_text=(
+            'Decisão manual de CS: mantém o desconto no 2º ano em diante. '
+            'Não é calculado automaticamente — julgamento qualitativo sobre '
+            'engajamento/feedback da clínica durante o 1º ano.'
+        )
+    )
+    price_adjusted_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Marca quando o job de reajuste de 12 meses já processou esta clínica (evita reajuste duplicado).'
+    )
+
     # Chave pública RSA enviada pelo app desktop no registro
     # Usada para criptografar credenciais do banco — backoffice nunca vê a senha em claro
     public_key_pem = models.TextField(blank=True)
@@ -65,3 +92,30 @@ class Clinic(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.plan})'
+
+    @classmethod
+    def promotional_slots_available(cls, exclude_pk=None) -> bool:
+        """
+        True se ainda há vaga de desconto de lançamento (30 primeiras
+        clínicas). Verificado no cadastro manual antes de marcar
+        `preco_promocional=True` numa clínica.
+
+        `exclude_pk` exclui a própria clínica da contagem — necessário
+        para clínicas que já são promocionais e estão sendo reprocessadas
+        (ex: criação de assinatura para uma das 30 já marcadas).
+        """
+        qs = cls.objects.filter(preco_promocional=True)
+        if exclude_pk is not None:
+            qs = qs.exclude(pk=exclude_pk)
+        return qs.count() < PROMOTIONAL_SLOTS
+
+    def clean(self):
+        super().clean()
+        if self.preco_promocional:
+            if not Clinic.promotional_slots_available(exclude_pk=self.pk):
+                raise ValidationError({
+                    'preco_promocional': (
+                        f'Limite de {PROMOTIONAL_SLOTS} vagas do desconto de lançamento já '
+                        'foi atingido. Não é possível marcar mais clínicas como promocionais.'
+                    )
+                })
