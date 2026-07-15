@@ -29,3 +29,4 @@ htmlcov/
 *.pem
 .service_jwt_private.pem
 .service_jwt_public.pem
+.claude/templates

@@ -265,3 +265,58 @@ class ClinicAccessAPITest(APITestCase):
         """Acesso sem autenticação retorna 401."""
         response = self.client.get('/api/accounts/clinic-access/')
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_by_clinic_denied_without_access(self):
+        """BO-SEC-004: support user sem acesso à clínica recebe 403 em by-clinic."""
+        # support_user não tem ClinicAccess a clinic1
+        self.client.force_authenticate(user=self.support_user)
+        response = self.client.get(
+            f'/api/accounts/clinic-access/by-clinic/{self.clinic1.id}/'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_by_clinic_allowed_with_own_access(self):
+        """Support user com ClinicAccess ativo à clínica consegue consultar by-clinic."""
+        ClinicAccess.objects.create(
+            support_user=self.support_user,
+            clinic=self.clinic1,
+            role='viewer',
+            granted_by=self.admin_user,
+        )
+        self.client.force_authenticate(user=self.support_user)
+        response = self.client.get(
+            f'/api/accounts/clinic-access/by-clinic/{self.clinic1.id}/'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_by_clinic_allowed_for_admin(self):
+        """Usuário ADMIN acessa by-clinic de qualquer clínica sem restrição."""
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get(
+            f'/api/accounts/clinic-access/by-clinic/{self.clinic2.id}/'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_by_user_denied_for_other_user(self):
+        """BO-SEC-004: support user não pode consultar by-user de outro usuário."""
+        self.client.force_authenticate(user=self.support_user)
+        response = self.client.get(
+            f'/api/accounts/clinic-access/by-user/{self.billing_user.id}/'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_by_user_allowed_for_self(self):
+        """Support user consegue consultar seus próprios dados via by-user."""
+        self.client.force_authenticate(user=self.support_user)
+        response = self.client.get(
+            f'/api/accounts/clinic-access/by-user/{self.support_user.id}/'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_by_user_allowed_for_admin(self):
+        """Usuário ADMIN acessa by-user de qualquer usuário sem restrição."""
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.get(
+            f'/api/accounts/clinic-access/by-user/{self.billing_user.id}/'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)

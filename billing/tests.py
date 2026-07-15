@@ -236,6 +236,46 @@ class InvoiceViewSetTest(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['status'], InvoiceStatus.PAID)
 
+    def test_generate_invoices_isolated_by_tenant(self):
+        """BO-SEC-007b: support user sem ClinicAccess não gera fatura para clínica alheia."""
+        other_clinic = make_clinic(name='Clínica Sem Acesso')
+
+        response = self.client.post(
+            '/api/billing/invoices/generate/',
+            {'competencia': '2026-10'},
+            format='json',
+        )
+        self.assertIn(response.status_code, [200, 201])
+        self.assertFalse(
+            Invoice.objects.filter(clinic=other_clinic, competencia='2026-10').exists()
+        )
+        self.assertTrue(
+            Invoice.objects.filter(clinic=self.clinic, competencia='2026-10').exists()
+        )
+
+    def test_generate_invoices_admin_generates_for_any_clinic(self):
+        """Usuário ADMIN gera faturas para todas as clínicas ativas, sem restrição."""
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        admin_user = User.objects.create_user(
+            username='admin_billing',
+            email='admin_billing@test.com',
+            password='pass123',
+            role='admin',
+        )
+        other_clinic = make_clinic(name='Clínica Admin Acesso Total')
+        self.client.force_authenticate(user=admin_user)
+
+        response = self.client.post(
+            '/api/billing/invoices/generate/',
+            {'competencia': '2026-11'},
+            format='json',
+        )
+        self.assertIn(response.status_code, [200, 201])
+        self.assertTrue(
+            Invoice.objects.filter(clinic=other_clinic, competencia='2026-11').exists()
+        )
+
     def test_mark_overdue(self):
         """POST /api/billing/invoices/mark-overdue/"""
         # Criar invoice vencida
@@ -253,3 +293,59 @@ class InvoiceViewSetTest(APITestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertGreater(response.data['marked_overdue'], 0)
+
+    def test_mark_overdue_isolated_by_tenant(self):
+        """BO-SEC-010: support user sem ClinicAccess não marca fatura de clínica alheia como vencida."""
+        other_clinic = make_clinic(name='Clínica Sem Acesso Overdue')
+        other_invoice = Invoice.objects.create(
+            clinic=other_clinic,
+            competencia='2026-01',
+            amount=Decimal('100.00'),
+            due_date=timezone.now().date() - timezone.timedelta(days=10),
+        )
+        own_invoice = Invoice.objects.create(
+            clinic=self.clinic,
+            competencia='2026-02',
+            amount=Decimal('100.00'),
+            due_date=timezone.now().date() - timezone.timedelta(days=10),
+        )
+
+        response = self.client.post(
+            '/api/billing/invoices/mark-overdue/',
+            {},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+
+        other_invoice.refresh_from_db()
+        own_invoice.refresh_from_db()
+        self.assertEqual(other_invoice.status, InvoiceStatus.PENDING)
+        self.assertEqual(own_invoice.status, InvoiceStatus.OVERDUE)
+
+    def test_mark_overdue_admin_marks_any_clinic(self):
+        """Usuário ADMIN marca faturas vencidas de qualquer clínica, sem restrição."""
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        admin_user = User.objects.create_user(
+            username='admin_overdue',
+            email='admin_overdue@test.com',
+            password='pass123',
+            role='admin',
+        )
+        other_clinic = make_clinic(name='Clínica Admin Overdue')
+        other_invoice = Invoice.objects.create(
+            clinic=other_clinic,
+            competencia='2026-01',
+            amount=Decimal('100.00'),
+            due_date=timezone.now().date() - timezone.timedelta(days=10),
+        )
+        self.client.force_authenticate(user=admin_user)
+
+        response = self.client.post(
+            '/api/billing/invoices/mark-overdue/',
+            {},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        other_invoice.refresh_from_db()
+        self.assertEqual(other_invoice.status, InvoiceStatus.OVERDUE)

@@ -1,0 +1,74 @@
+{% extends "portal_gestor/base.html" %}
+{% block title %}Resultados do Relatório{% endblock %}
+{% block subnav %}
+    <nav class="portal-breadcrumb">
+        <a href="{% url 'portal_home' %}">Dashboard</a>
+        <span class="sep">/</span>
+        <a href="{% url 'portal_report_new' %}">Relatórios</a>
+        <span class="sep">/</span>
+        <span class="current">Resultado</span>
+    </nav>
+{% endblock %}
+{% block content %}
+    <h1>Resultados — {{ session.date_from|date:"d/m/Y" }} a {{ session.date_to|date:"d/m/Y" }}</h1>
+
+    {% if error %}
+        <div class="error">{{ error }}</div>
+        {% if error_action == 'new' %}
+            <a class="button" href="{% url 'portal_report_new' %}">Gerar novo relatório</a>
+        {% endif %}
+    {% else %}
+        {% if patients is not None %}
+            <h2>Pacientes ({{ patients|length }})</h2>
+            {% if patients %}
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Nome</th><th>Documento</th><th>Telefone</th><th>E-mail</th><th>Atualizado em</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for p in patients %}
+                            <tr>
+                                <td>{{ p.name }}</td>
+                                <td>{{ p.document|default:"—" }}</td>
+                                <td>{{ p.phone|default:"—" }}</td>
+                                <td>{{ p.email|default:"—" }}</td>
+                                <td>{{ p.updated_at }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p class="muted">Nenhum dado de paciente disponível ainda nesta janela.</p>
+            {% endif %}
+        {% endif %}
+
+        {% if appointments is not None %}
+            <h2>Agendamentos ({{ appointments|length }})</h2>
+            {% if appointments %}
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Início</th><th>Fim</th><th>Status</th><th>Observações</th><th>Atualizado em</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for a in appointments %}
+                            <tr>
+                                <td>{{ a.start_time }}</td>
+                                <td>{{ a.end_time }}</td>
+                                <td>{{ a.status }}</td>
+                                <td>{{ a.notes|default:"—" }}</td>
+                                <td>{{ a.updated_at }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p class="muted">Nenhum agendamento disponível ainda nesta janela.</p>
+            {% endif %}
+        {% endif %}
+
+        <p class="muted">
+            A sincronização pode continuar em segundo plano — recarregue esta página
+            mais tarde se esperava mais registros.
+        </p>
+    {% endif %}
+{% endblock %}

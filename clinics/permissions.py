@@ -53,3 +53,19 @@ class IsServiceTokenAuthenticated(BasePermission):
             'clinic_id' in request.auth
         )
 
+
+class IsClinicUser(BasePermission):
+    """
+    Permite acesso apenas a requisições autenticadas via ClinicJWTAuthentication
+    (accounts.authentication.ClinicJWTAuthentication), isto é, request.user é um
+    accounts.models.ClinicUser ativo.
+
+    Usar em conjunto com authentication_classes = [ClinicJWTAuthentication] nas
+    views do portal_gestor — nunca combinar com o DEFAULT_AUTHENTICATION_CLASSES
+    global (que resolve para SupportUser).
+    """
+
+    def has_permission(self, request, view):
+        from accounts.models import ClinicUser
+        return isinstance(request.user, ClinicUser) and request.user.is_active
+

@@ -1,0 +1,15 @@
+{% extends "portal_gestor/base.html" %}
+{% block title %}Status do Relatório{% endblock %}
+{% block subnav %}
+    <nav class="portal-breadcrumb">
+        <a href="{% url 'portal_home' %}">Dashboard</a>
+        <span class="sep">/</span>
+        <a href="{% url 'portal_report_new' %}">Relatórios</a>
+        <span class="sep">/</span>
+        <span class="current">Acompanhando</span>
+    </nav>
+{% endblock %}
+{% block content %}
+    <h1>Relatório — {{ session.date_from|date:"d/m/Y" }} a {{ session.date_to|date:"d/m/Y" }}</h1>
+    {% include "portal_gestor/_report_status_fragment.html" %}
+{% endblock %}

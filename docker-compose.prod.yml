@@ -1,0 +1,137 @@
+# Compose de PRODUÇÃO/VPS — não confundir com docker-compose.yml (infra de
+# homologação local, TASK-053, só Postgres+Redis pra rodar teste E2E contra
+# o gateway na sua máquina).
+#
+# Este arquivo é o alvo da migração "sair do Railway pra uma VPS qualquer"
+# mencionada pelo usuário: sobe o backoffice (web + worker Celery), o
+# Evolution API (alertas via WhatsApp) e a infra de banco/cache que cada um
+# precisa. No Railway, cada serviço abaixo vira um serviço Railway separado
+# (o Railway builda direto do Dockerfile da raiz, não usa este compose) —
+# este arquivo é o que dá portabilidade pra rodar tudo numa VPS com
+# `docker compose -f docker-compose.prod.yml up -d`, sem reescrever nada.
+#
+# Segredos (SECRET_KEY, DATABASE_URL, EVOLUTION_API_KEY etc.) vêm de um
+# .env.production que NUNCA é commitado (ver .gitignore) — copie
+# .env.example, preencha, e aponte com `--env-file .env.production`.
+
+services:
+  backoffice:
+    build: .
+    restart: unless-stopped
+    command: ["gunicorn", "syncro_backoffice.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "30"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    build: .
+    restart: unless-stopped
+    # Mesma imagem do backoffice, comando diferente — entrypoint.sh detecta
+    # que o processo não é "gunicorn" e pula migrate/collectstatic (só o
+    # serviço web faz isso, ver docker/entrypoint.sh).
+    command: ["celery", "-A", "syncro_backoffice", "worker", "--loglevel=info"]
+    env_file:
+      - .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-syncro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env.production}
+      POSTGRES_DB: ${POSTGRES_DB:-syncro_backoffice}
+    volumes:
+      - backoffice_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-syncro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - backoffice_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Evolution API — envia os alertas via WhatsApp (gateway offline, erro
+  # crítico, etc.) pedidos pelo usuário. Container isolado com seu próprio
+  # Postgres/Redis (evita acoplar o schema dele ao nosso banco de negócio, e
+  # uma falha no Evolution não derruba o resto do stack). Documentação:
+  # https://doc.evolution-api.com — CONFIRME as env vars against a versão
+  # que você realmente vai pinar antes de subir em produção, esse projeto
+  # muda a superfície de configuração entre versões.
+  evolution-api:
+    image: atendai/evolution-api:v2.2.3
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_URL: ${EVOLUTION_SERVER_URL:?defina a URL pública deste serviço}
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:?defina uma API key forte — protege a API do Evolution}
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:${EVOLUTION_DB_PASSWORD:?defina EVOLUTION_DB_PASSWORD}@evolution-db:5432/evolution
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://evolution-redis:6379/0
+      CACHE_LOCAL_ENABLED: "false"
+      LANGUAGE: pt-BR
+    depends_on:
+      evolution-db:
+        condition: service_healthy
+      evolution-redis:
+        condition: service_healthy
+
+  evolution-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${EVOLUTION_DB_PASSWORD:?defina EVOLUTION_DB_PASSWORD}
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  evolution-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - evolution_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  backoffice_postgres_data:
+  backoffice_redis_data:
+  evolution_postgres_data:
+  evolution_redis_data:

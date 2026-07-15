@@ -178,3 +178,128 @@ class DDLSanitizationTest(TestCase):
         for call in calls:
             if 'CREATE USER' in call or 'CREATE DATABASE' in call or 'REVOKE' in call:
                 self.assertIn('"', call, "Identificador deve estar entre aspas duplas no DDL")
+
+class ProvisioningClinicDbTemplateTest(TestCase):
+    """
+    Testes da TASK-053 — CLINIC_DB_TEMPLATE: quando configurado, CREATE DATABASE
+    usa TEMPLATE (banco de clínica já nasce com o schema do gateway aplicado).
+    """
+
+    def _make_clinic(self, slug='clinica-template-test'):
+        """
+        Cria a Clinic com o post_save signal (provision_on_key_received)
+        REALMENTE desconectado — `@patch('clinics.signals.provision_on_key_received')`
+        não funciona aqui porque `@receiver` já registrou o objeto função original
+        no dispatcher do Django antes do patch existir (patch só substitui o nome
+        no módulo, não o receiver já conectado). Sem isso, `Clinic.objects.create()`
+        dispara um provisionamento automático extra, duplicando as chamadas de
+        `CREATE DATABASE` e quebrando qualquer asserção de call count.
+        """
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+
+        from django.db.models.signals import post_save
+        from clinics.signals import provision_on_key_received
+
+        post_save.disconnect(provision_on_key_received, sender=Clinic)
+        try:
+            return Clinic.objects.create(
+                name='Clínica Template Test', slug=slug, plan=Plan.PROFESSIONAL,
+                status=ClinicStatus.ACTIVE, cnpj=f'{uuid.uuid4().hex[:14]}/0001-00',
+                public_key_pem=public_pem,
+            )
+        finally:
+            post_save.connect(provision_on_key_received, sender=Clinic)
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_create_database_includes_template_when_configured(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+
+        clinic = self._make_clinic('clinica-com-template')
+        with self.settings(CLINIC_DB_TEMPLATE='clinic_schema_template'):
+            provision_clinic_database(clinic)
+
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        create_db_calls = [c for c in calls if 'CREATE DATABASE' in c]
+        self.assertEqual(len(create_db_calls), 1)
+        self.assertIn('TEMPLATE', create_db_calls[0])
+        self.assertIn('"clinic_schema_template"', create_db_calls[0])
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_create_database_omits_template_when_not_configured(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+
+        clinic = self._make_clinic('clinica-sem-template')
+        with self.settings(CLINIC_DB_TEMPLATE=''):
+            provision_clinic_database(clinic)
+
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        create_db_calls = [c for c in calls if 'CREATE DATABASE' in c]
+        self.assertEqual(len(create_db_calls), 1)
+        self.assertNotIn('TEMPLATE', create_db_calls[0])
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_grants_template_owner_role_when_template_configured(self, mock_connect):
+        """
+        CREATE DATABASE ... TEMPLATE clona os catálogos preservando o dono ORIGINAL
+        de cada tabela (clinic_template_owner — ver docker/postgres-init/01-clinic-
+        -template.sh), não o usuário recém-criado da clínica. Sem o GRANT logo em
+        seguida, o usuário da clínica recebe "permission denied" em toda tabela na
+        primeira conexão real (bug encontrado e confirmado manualmente contra o
+        Postgres do docker-compose antes desta correção).
+        """
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+
+        clinic = self._make_clinic('clinica-grant-owner')
+        with self.settings(CLINIC_DB_TEMPLATE='clinic_schema_template'):
+            provision_clinic_database(clinic)
+
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        grant_calls = [c for c in calls if 'GRANT' in c and 'clinic_template_owner' in c]
+        self.assertEqual(len(grant_calls), 1)
+        # GRANT precisa vir depois do CREATE DATABASE (a role só existe pro
+        # usuário se conectar após o banco existir; a ordem também documenta a
+        # intenção — não é apenas side-effect de qualquer GRANT solto).
+        create_idx = next(i for i, c in enumerate(calls) if 'CREATE DATABASE' in c)
+        grant_idx = next(i for i, c in enumerate(calls) if 'GRANT' in c and 'clinic_template_owner' in c)
+        self.assertGreater(grant_idx, create_idx)
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_no_template_owner_grant_when_template_not_configured(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+
+        clinic = self._make_clinic('clinica-sem-grant')
+        with self.settings(CLINIC_DB_TEMPLATE=''):
+            provision_clinic_database(clinic)
+
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        grant_calls = [c for c in calls if 'clinic_template_owner' in c]
+        self.assertEqual(len(grant_calls), 0)
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_invalid_template_name_raises_before_touching_db(self, mock_connect):
+        """Nome de template malicioso/inválido nunca deve chegar ao DDL bruto."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+
+        clinic = self._make_clinic('clinica-template-invalido')
+        with self.settings(CLINIC_DB_TEMPLATE='"; DROP DATABASE postgres; --'):
+            with self.assertRaises(RuntimeError):
+                provision_clinic_database(clinic)

@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from datetime import timedelta
 from syncro_backoffice.base_admin import BaseAdmin
 
@@ -20,8 +21,8 @@ class SystemHeartbeatAdmin(BaseAdmin):
 
     def sync_status(self, obj):
         if obj.sync_connected:
-            return format_html('<span style="color:green">✔ Conectado</span>')
-        return format_html('<span style="color:orange">✘ Offline</span>')
+            return mark_safe('<span style="color:green">✔ Conectado</span>')
+        return mark_safe('<span style="color:orange">✘ Offline</span>')
     sync_status.short_description = 'Sync'
 
     def last_seen_status(self, obj):

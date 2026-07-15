@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -8,7 +9,13 @@ from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic
 from clinics.permissions import IsAuthenticatedByLicenseKey
 from metrics.serializers import SystemLogSerializer
+from portal_gestor.models import ReportSession, ReportSessionStatus
+from portal_gestor.services import get_pending_session_key_payload
 from .models import SystemHeartbeat, SystemLog, LogLevel
+
+# Status a partir dos quais um resync_ack (TASK-052) pode transicionar a sessão pra
+# READY — uma sessão já expired/ready não deve ser reaberta por um ack atrasado.
+_ACKABLE_STATUSES = (ReportSessionStatus.KEY_DELIVERED, ReportSessionStatus.SYNCING)
 
 
 @api_view(['POST'])
@@ -27,7 +34,43 @@ def heartbeat(request):
             'sync_connected': data.get('sync_connected', False),
         },
     )
-    return Response({'ok': True}, status=status.HTTP_200_OK)
+
+    response_body = {'ok': True}
+
+    # TASK-042/041: se houver uma ReportSession pendente para esta clínica,
+    # entrega a TemporaryKey cifrada + a janela de resync no mesmo heartbeat —
+    # sem endpoint dedicado no gateway (ver syncro_gateway health_worker.go).
+    session_payload = get_pending_session_key_payload(clinic)
+    if session_payload is not None:
+        response_body.update(session_payload)
+
+    # TASK-052: gateway confirma que a janela de resync foi de fato persistida no
+    # Postgres remoto — fecha o TODO da TASK-042/043 (sessão nunca chegava a READY).
+    _apply_resync_ack(clinic, data.get('resync_ack'))
+
+    return Response(response_body, status=status.HTTP_200_OK)
+
+
+def _apply_resync_ack(clinic, resync_ack):
+    """
+    Marca a ReportSession como READY quando o gateway confirma (via resync_ack no
+    corpo do heartbeat) que a janela de resync foi persistida. Idempotente e nunca
+    reabre uma sessão já expired/ready — ack atrasado (chegando depois de
+    mark_expired já ter rodado) é ignorado silenciosamente, não é erro.
+    """
+    if not isinstance(resync_ack, dict):
+        return
+    session_id = resync_ack.get('session_id')
+    if not session_id:
+        return
+
+    try:
+        session = ReportSession.objects.get(session_id=session_id, clinic=clinic)
+    except (ReportSession.DoesNotExist, ValueError, TypeError, ValidationError):
+        return
+
+    if session.status in _ACKABLE_STATUSES and not session.is_expired():
+        session.mark_ready()
 
 
 @api_view(['POST'])

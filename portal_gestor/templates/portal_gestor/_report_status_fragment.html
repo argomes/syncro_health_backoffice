@@ -1,0 +1,27 @@
+{% if session.status == 'pending' %}
+    <div id="report-status" class="card" hx-get="{% url 'portal_report_status_fragment' session.session_id %}" hx-trigger="every 10s" hx-swap="outerHTML">
+        <span class="badge badge-pending">Aguardando sincronização</span>
+        <p>A clínica ainda não recebeu o pedido de sincronização. Isso pode levar alguns minutos — não é preciso ficar nesta tela, o relatório continua sendo preparado.</p>
+    </div>
+{% elif session.status == 'expired' %}
+    <div id="report-status" class="card">
+        <span class="badge badge-red">Expirado</span>
+        <p>Esta sessão expirou antes de ser concluída.</p>
+        <a class="button" href="{% url 'portal_report_new' %}">Gerar novo relatório</a>
+    </div>
+{% elif session.status == 'ready' %}
+    <div id="report-status" class="card">
+        <span class="badge badge-green">Pronto</span>
+        <p>A sincronização terminou — todos os dados da janela pedida já estão disponíveis.</p>
+        <a class="button" href="{% url 'portal_report_results' session.session_id %}">Ver resultados</a>
+    </div>
+{% else %}
+    {# key_delivered / syncing — dado já pode estar disponível, mesmo que parcialmente
+       (ver report_reads.py: READABLE_STATUSES aceita os dois). Continua o polling até
+       o gateway confirmar (TASK-052, resync_ack) e a sessão virar `ready`. #}
+    <div id="report-status" class="card" hx-get="{% url 'portal_report_status_fragment' session.session_id %}" hx-trigger="every 10s" hx-swap="outerHTML">
+        <span class="badge badge-yellow">Sincronizando</span>
+        <p>A sincronização está em andamento. Você já pode conferir os dados disponíveis até agora, mas alguns registros ainda podem estar chegando.</p>
+        <a class="button" href="{% url 'portal_report_results' session.session_id %}">Ver resultados</a>
+    </div>
+{% endif %}

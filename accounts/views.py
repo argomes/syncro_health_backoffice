@@ -123,6 +123,16 @@ class ClinicAccessViewSet(viewsets.ModelViewSet):
         """
         clinic = get_object_or_404(Clinic, id=clinic_id)
 
+        user = request.user
+        if user.role != SupportUser.Role.ADMIN:
+            has_access = ClinicAccess.objects.filter(
+                support_user=user,
+                clinic=clinic,
+                revoked_at__isnull=True,
+            ).exists()
+            if not has_access:
+                return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
         accesses = ClinicAccess.objects.filter(
             clinic=clinic,
             revoked_at__isnull=True
@@ -141,6 +151,10 @@ class ClinicAccessViewSet(viewsets.ModelViewSet):
         GET /api/accounts/clinic-access/by-user/{user_id}/
         Lista todas as clínicas que um user pode acessar.
         """
+        user = request.user
+        if user.role != SupportUser.Role.ADMIN and str(user.id) != str(user_id):
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
         support_user = get_object_or_404(SupportUser, id=user_id)
 
         accesses = ClinicAccess.objects.filter(

@@ -1,0 +1,18 @@
+{% if active_notice %}
+    <div id="notice-banner" class="notice-banner">
+        <div class="notice-banner-text">
+            <strong>{{ active_notice.title }}</strong>
+            <span>{{ active_notice.body }}</span>
+        </div>
+        <button
+            type="button"
+            class="notice-banner-dismiss"
+            hx-post="{% url 'portal_notice_dismiss' active_notice.id %}"
+            hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+            hx-target="#notice-banner"
+            hx-swap="outerHTML"
+        >
+            Dispensar
+        </button>
+    </div>
+{% endif %}

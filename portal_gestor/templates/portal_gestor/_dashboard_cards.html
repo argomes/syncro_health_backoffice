@@ -1,0 +1,63 @@
+<div id="dashboard-cards"
+     hx-get="{% url 'portal_dashboard_fragment' %}"
+     hx-trigger="every 30s"
+     hx-swap="outerHTML">
+
+    {# ---------- Card 1: status de sincronização ---------- #}
+    <section class="card sync-card sync-{{ sync_state }}">
+        {% if sync_state == 'ok' %}
+            <span class="badge badge-green">● Sincronizado</span>
+            <p>Última sincronização: {{ summary.gateway_status.last_seen|default:"—" }}</p>
+        {% elif sync_state == 'delayed' %}
+            <span class="badge badge-yellow">● Atrasado</span>
+            <p>Última sincronização: {{ summary.gateway_status.last_seen }}</p>
+        {% elif sync_state == 'offline' %}
+            <span class="badge badge-red">● Desconectado</span>
+            <p>Última sincronização: {{ summary.gateway_status.last_seen|default:"—" }}</p>
+        {% else %}
+            <span class="badge badge-gray">● Nunca sincronizou</span>
+            <p>Esta clínica ainda não conectou o gateway.</p>
+        {% endif %}
+        {% if summary.gateway_status.pending_sync %}
+            <p class="muted">{{ summary.gateway_status.pending_sync }} registro(s) pendente(s) de envio.</p>
+        {% endif %}
+    </section>
+
+    {# ---------- Card 2: alerta de licença — só aparece se houver pendência ---------- #}
+    {% if summary.license.warning %}
+        <section class="card license-card">
+            <span class="badge badge-yellow">⚠ Atenção à licença</span>
+            {% if summary.license.status != "active" %}
+                <p>Status da clínica: <strong>{{ summary.license.status }}</strong></p>
+            {% endif %}
+            {% if summary.license.days_until_expiry is not None %}
+                {% if summary.license.days_until_expiry < 0 %}
+                    <p>Licença expirada.</p>
+                {% else %}
+                    <p>Licença vence em {{ summary.license.days_until_expiry }} dia(s).</p>
+                {% endif %}
+            {% endif %}
+        </section>
+    {% endif %}
+
+    {# ---------- Card 3: atalho de relatório ---------- #}
+    <section class="card report-card">
+        <h2>Relatórios</h2>
+        <a class="button" href="{% url 'portal_report_new' %}">Gerar Relatório</a>
+
+        {% if summary.report_sessions.recent %}
+            <ul class="report-list">
+                {% for session in summary.report_sessions.recent %}
+                    <li>
+                        <a href="{% url 'portal_report_status' session.session_id %}">
+                            <span class="badge badge-{{ session.status }}">{{ session.status }}</span>
+                            {{ session.date_from|date:"d/m/Y" }} – {{ session.date_to|date:"d/m/Y" }}
+                        </a>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="muted">Nenhum relatório gerado ainda.</p>
+        {% endif %}
+    </section>
+</div>

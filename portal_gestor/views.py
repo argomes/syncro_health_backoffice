@@ -1,0 +1,135 @@
+from django.http import HttpResponse
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from accounts.authentication import ClinicCookieJWTAuthentication, ClinicJWTAuthentication
+from clinics.permissions import IsClinicUser
+
+from . import notices, report_reads, services
+from .dashboard import get_dashboard_summary
+from .models import ReportSession
+from .serializers import ReportSessionCreateSerializer, ReportSessionSerializer
+
+
+class ReportSessionCreateView(APIView):
+    """
+    POST /portal/api/reports/sessions/ — clique de "Gerar Relatório" no portal_gestor.
+
+    Retorna IMEDIATAMENTE (session_id + status=pending) — não bloqueia esperando
+    a sincronização do gateway, que só acontece no próximo heartbeat (~5 min) e
+    pode levar ~2 ciclos até os dados estarem disponíveis (ver nota "UX é
+    obrigatoriamente assíncrona" na task doc TASK-042). O frontend deve fazer
+    polling em GET /portal/api/reports/sessions/{session_id}/ até status=ready.
+    """
+
+    authentication_classes = [ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+
+    def post(self, request):
+        serializer = ReportSessionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        session = services.create_report_session(
+            clinic=request.user.clinic,
+            created_by=request.user,
+            entities=data['entities'],
+            date_from=data['date_from'],
+            date_to=data['date_to'],
+        )
+
+        return Response(ReportSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+
+
+class ReportSessionDetailView(APIView):
+    """
+    GET /portal/api/reports/sessions/{session_id}/ — usado pelo frontend para
+    fazer polling do status até a sessão ficar `ready` (ver nota TASK-042).
+    Escopado à própria clínica do ClinicUser — nunca resolve sessão de outra.
+    """
+
+    authentication_classes = [ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+
+    def get(self, request, session_id):
+        try:
+            session = ReportSession.objects.get(session_id=session_id, clinic=request.user.clinic)
+        except ReportSession.DoesNotExist:
+            return Response({'error': 'not_found'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(ReportSessionSerializer(session).data)
+
+
+class _ReportReadView(APIView):
+    """
+    Base para os endpoints de leitura de relatório (TASK-043). Resolve a sessão
+    escopada à própria clínica do ClinicUser (404 se for de outra clínica ou não
+    existir) e delega a leitura/decriptação a portal_gestor.report_reads, que
+    levanta PermissionDenied (403) para qualquer sessão expirada, ainda não
+    entregue, ou fora do escopo de entidades pedido na criação — nunca cai em
+    fallback silencioso para dado cru.
+    """
+
+    authentication_classes = [ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+    read_fn_name = None  # definido nas subclasses — lookup dinâmico via getattr,
+    # não uma referência direta à função (que "congelaria" a versão original do
+    # módulo em tempo de import e ignoraria patches em testes).
+
+    def get(self, request, session_id):
+        try:
+            session = ReportSession.objects.get(session_id=session_id, clinic=request.user.clinic)
+        except ReportSession.DoesNotExist:
+            return Response({'error': 'not_found'}, status=status.HTTP_404_NOT_FOUND)
+
+        read_fn = getattr(report_reads, self.read_fn_name)
+        results = read_fn(request.user.clinic, session)
+        return Response({'results': results, 'count': len(results)})
+
+
+class PatientsReportView(_ReportReadView):
+    """GET /portal/api/reports/sessions/{session_id}/patients/"""
+    read_fn_name = 'read_patients_report'
+
+
+class AppointmentsReportView(_ReportReadView):
+    """GET /portal/api/reports/sessions/{session_id}/appointments/"""
+    read_fn_name = 'read_appointments_report'
+
+
+class DashboardSummaryView(APIView):
+    """
+    GET /portal/api/dashboard/summary/ — payload consolidado para a tela
+    inicial (TASK-049): status do gateway, alerta de licença, sessões de
+    relatório recentes. Aceita tanto o cookie httpOnly (páginas HTML via HTMX,
+    TASK-046/047) quanto o header Authorization (consumidores API/SPA), já que
+    esta é a primeira view do portal_gestor pensada para os dois transportes.
+    """
+
+    authentication_classes = [ClinicCookieJWTAuthentication, ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+
+    def get(self, request):
+        return Response(get_dashboard_summary(request.user.clinic))
+
+
+class NoticeDismissView(APIView):
+    """
+    POST /portal/api/notices/{id}/dismiss/ — dispensa o aviso contextual
+    (TASK-051) para o ClinicUser autenticado. Idempotente: dispensar de novo
+    não é erro. Aceita cookie (chamado via HTMX pelo botão no banner) ou
+    header Bearer, mesmo padrão de DashboardSummaryView.
+    """
+
+    authentication_classes = [ClinicCookieJWTAuthentication, ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+
+    def post(self, request, notice_id):
+        found = notices.dismiss_notice(request.user, notice_id)
+        if not found:
+            return Response({'error': 'not_found'}, status=status.HTTP_404_NOT_FOUND)
+        # Corpo vazio com 200 (não 204): HTMX não faz swap em respostas 204 por
+        # padrão — o hx-swap="outerHTML" do banner precisa de um corpo (vazio)
+        # pra efetivamente remover o elemento do DOM.
+        return HttpResponse(status=200)

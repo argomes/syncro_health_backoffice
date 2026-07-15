@@ -1,3 +1,5 @@
+import uuid
+from django.contrib.auth.hashers import make_password, check_password
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.core.exceptions import ValidationError
@@ -91,3 +93,81 @@ class ClinicAccess(models.Model):
         """Marca acesso como revogado."""
         from django.utils import timezone
         self.revoked_at = timezone.now()
+
+
+class ClinicUser(models.Model):
+    """
+    Usuário final da clínica (admin/gerente) que loga no portal_gestor —
+    diferente de SupportUser, que é a equipe interna Syncro.
+
+    Não é um AbstractUser porque AUTH_USER_MODEL já está fixado em
+    accounts.SupportUser (Django só permite um). A autenticação usa uma
+    JWTAuthentication dedicada (accounts.authentication.ClinicJWTAuthentication)
+    que resolve o token para este model em vez de get_user_model().
+
+    Sempre escopado a uma única clínica — nunca deve ser possível um
+    ClinicUser acessar dado de outra clínica através de nenhuma rota.
+    """
+
+    class AuthProvider(models.TextChoices):
+        LOCAL = 'local', 'Local (email/senha)'
+        # LDAP é um add-on pago, vendido sob demanda — o campo já existe para não
+        # exigir migração de schema quando for vendido, mas o fluxo de login LDAP
+        # (bind contra o diretório do cliente) ainda não está implementado.
+        LDAP = 'ldap', 'LDAP (add-on pago, não implementado)'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(
+        'clinics.Clinic',
+        on_delete=models.CASCADE,
+        related_name='clinic_users',
+        help_text='Clínica à qual este usuário pertence — nunca enxerga outra.',
+    )
+    email = models.EmailField()
+    name = models.CharField(max_length=255)
+    password = models.CharField(max_length=255, blank=True, help_text='Hash da senha (auth_provider=local)')
+    auth_provider = models.CharField(max_length=10, choices=AuthProvider, default=AuthProvider.LOCAL)
+    is_active = models.BooleanField(default=True)
+    last_login = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('clinic', 'email')
+        verbose_name = 'Usuário da Clínica'
+        verbose_name_plural = 'Usuários da Clínica'
+        indexes = [
+            models.Index(fields=['clinic', 'email']),
+        ]
+
+    def __str__(self):
+        return f'{self.email} @ {self.clinic.name}'
+
+    def save(self, *args, **kwargs):
+        # Normaliza para minúsculas antes de persistir: o login busca por
+        # email__iexact, mas o unique_together (clinic, email) é case-sensitive
+        # no banco — sem isso, 'a@x.com' e 'A@x.com' poderiam coexistir na
+        # mesma clínica e o .get(email__iexact=...) do login levantaria
+        # MultipleObjectsReturned (500) em vez de autenticar corretamente.
+        if self.email:
+            self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
+    def set_password(self, raw_password):
+        self.password = make_password(raw_password)
+
+    def check_password(self, raw_password):
+        if self.auth_provider != self.AuthProvider.LOCAL:
+            # LDAP não implementado ainda — nunca cai em fallback silencioso para local.
+            return False
+        return check_password(raw_password, self.password)
+
+    # Duck-typing exigido por DRF (throttling, permissions) — ClinicUser não é
+    # AbstractBaseUser, mas request.user precisa expor esses dois atributos.
+    @property
+    def is_authenticated(self):
+        return True
+
+    @property
+    def is_anonymous(self):
+        return False
