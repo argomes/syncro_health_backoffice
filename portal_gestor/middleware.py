@@ -24,7 +24,16 @@ from accounts.authentication import ClinicCookieJWTAuthentication
 # sem essa barra faria uma rota futura tipo `/portal/loginX/` casar
 # acidentalmente com `/portal/login` e vazar pelo gate sem autenticação —
 # a barra final funciona como delimitador de borda de segmento de path.
-_EXEMPT_PREFIXES = ('/portal/login/', '/portal/logout/', '/portal/refresh/', '/portal/api/')
+_EXEMPT_PREFIXES = (
+    '/portal/login/',
+    '/portal/logout/',
+    '/portal/refresh/',
+    '/portal/api/',
+    # TASK-BO-12 — "esqueci minha senha" precisa ser acessível sem sessão
+    # válida (é justamente pra quem não consegue logar); mesmo raciocínio
+    # de /portal/login/ acima.
+    '/portal/password-reset/',
+)
 
 
 class ClinicPortalAuthMiddleware:

@@ -1,6 +1,7 @@
 from django.contrib import admin
+from django.contrib.auth import views as auth_views
 from django.http import JsonResponse
-from django.urls import path, include
+from django.urls import path, include, reverse_lazy
 
 
 def health_check(request):
@@ -16,6 +17,7 @@ from clinics.views import issue_service_token, get_license_info
 from billing.webhook_views import asaas_webhook
 from syncro_backoffice.throttling import LoginRateThrottle
 from accounts.portal_views import ClinicTokenObtainPairView, ClinicTokenRefreshView, ClinicUserMeView
+from accounts.password_reset_clinic import ClinicPasswordResetConfirmView, ClinicPasswordResetView
 from portal_gestor.template_views import (
     DashboardFragmentView,
     DashboardHomeView,
@@ -49,6 +51,55 @@ urlpatterns = [
     path('api/support/', include('support.urls')),
     path('api/tiss/', include('tiss.urls')),
 
+    # TASK-BO-12 — "esqueci minha senha" pra SupportUser (equipe interna,
+    # AUTH_USER_MODEL). Views built-in do Django puras — SupportUser é o
+    # único AUTH_USER_MODEL do projeto, então get_user_model() já resolve
+    # certo sem nenhuma view custom.
+    #
+    # template_name/email_template_name/subject_template_name explícitos e
+    # com prefixo support_ (em vez dos nomes default do Django, tipo
+    # registration/password_reset_form.html): django.contrib.admin já
+    # empacota templates com esses nomes exatos em
+    # django/contrib/admin/templates/registration/ pro próprio fluxo de
+    # reset do admin, e como 'django.contrib.admin' vem antes de 'accounts'
+    # em INSTALLED_APPS, o loader de templates (APP_DIRS) acharia a versão
+    # do admin primeiro e ignoraria silenciosamente a nossa — nomes
+    # explícitos e únicos evitam essa colisão em vez de depender da ordem
+    # de INSTALLED_APPS pra desempatar.
+    path(
+        'admin-password-reset/',
+        auth_views.PasswordResetView.as_view(
+            template_name='registration/support_password_reset_form.html',
+            email_template_name='registration/support_password_reset_email.txt',
+            html_email_template_name='registration/support_password_reset_email.html',
+            subject_template_name='registration/support_password_reset_subject.txt',
+            success_url=reverse_lazy('admin_password_reset_done'),
+        ),
+        name='admin_password_reset',
+    ),
+    path(
+        'admin-password-reset/done/',
+        auth_views.PasswordResetDoneView.as_view(
+            template_name='registration/support_password_reset_done.html',
+        ),
+        name='admin_password_reset_done',
+    ),
+    path(
+        'admin-password-reset/confirm/<uidb64>/<token>/',
+        auth_views.PasswordResetConfirmView.as_view(
+            template_name='registration/support_password_reset_confirm.html',
+            success_url=reverse_lazy('admin_password_reset_complete'),
+        ),
+        name='admin_password_reset_confirm',
+    ),
+    path(
+        'admin-password-reset/complete/',
+        auth_views.PasswordResetCompleteView.as_view(
+            template_name='registration/support_password_reset_complete.html',
+        ),
+        name='admin_password_reset_complete',
+    ),
+
     # portal_gestor — login de ClinicUser (admin/gerente da clínica), auth separada
     # de SupportUser. TASK-042a — base para TASK-042/043 (emissão/leitura de relatórios).
     path('portal/api/auth/login/', ClinicTokenObtainPairView.as_view(), name='clinic_token_obtain_pair'),
@@ -66,5 +117,31 @@ urlpatterns = [
     path('portal/relatorios/<uuid:session_id>/', ReportStatusView.as_view(), name='portal_report_status'),
     path('portal/relatorios/<uuid:session_id>/status/fragment/', ReportStatusFragmentView.as_view(), name='portal_report_status_fragment'),
     path('portal/relatorios/<uuid:session_id>/resultados/', ReportResultsView.as_view(), name='portal_report_results'),
+
+    # TASK-BO-12 — "esqueci minha senha" pra ClinicUser (gestor da clínica no
+    # Portal Gestor). ClinicUser não é AUTH_USER_MODEL — ver
+    # accounts/password_reset_clinic.py pra detalhe de por que precisa de
+    # views próprias em vez das puras django.contrib.auth.views.
+    path(
+        'portal/password-reset/',
+        ClinicPasswordResetView.as_view(),
+        name='portal_password_reset',
+    ),
+    path(
+        'portal/password-reset/done/',
+        auth_views.PasswordResetDoneView.as_view(template_name='portal_gestor/password_reset_done.html'),
+        name='portal_password_reset_done',
+    ),
+    path(
+        'portal/password-reset/confirm/<uidb64>/<token>/',
+        ClinicPasswordResetConfirmView.as_view(),
+        name='portal_password_reset_confirm',
+    ),
+    path(
+        'portal/password-reset/complete/',
+        auth_views.PasswordResetCompleteView.as_view(template_name='portal_gestor/password_reset_complete.html'),
+        name='portal_password_reset_complete',
+    ),
+
     path('portal/', DashboardHomeView.as_view(), name='portal_home'),
 ]
