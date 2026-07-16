@@ -184,24 +184,29 @@ def verificar_elegibilidade(request):
     recepcionista está esperando a resposta na hora (BACFF-013 — diferente
     do fluxo de lote, que é assíncrono).
 
-    Body: {operator_config_id, numero_carteira, beneficiario_nome?,
+    Body: {registro_ans, numero_carteira, beneficiario_nome?,
            appointment_id?, mock_scenario?}
+
+    Identifica a operadora por `registro_ans` (código ANS de 6 dígitos), não
+    pelo UUID interno do TISSOperatorConfig — é a chave de negócio que o
+    Gateway já tem localmente (domain.InsuranceOperator.ANSCode), evitando
+    acoplar os dois sistemas pelos IDs internos de cada um.
     """
     clinic = request.clinic
     data = request.data
 
-    operator_config_id = data.get('operator_config_id')
+    registro_ans = data.get('registro_ans')
     numero_carteira = data.get('numero_carteira')
-    if not operator_config_id or not numero_carteira:
+    if not registro_ans or not numero_carteira:
         return Response(
-            {'error': 'operator_config_id_e_numero_carteira_obrigatorios'},
+            {'error': 'registro_ans_e_numero_carteira_obrigatorios'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
         # isolamento: operator_config precisa pertencer à MESMA clínica do
         # license_key autenticado — nunca consultar config de outra clínica.
-        operator_config = TISSOperatorConfig.objects.get(id=operator_config_id, clinic=clinic)
+        operator_config = TISSOperatorConfig.objects.get(registro_ans=registro_ans, clinic=clinic)
     except TISSOperatorConfig.DoesNotExist:
         return Response({'error': 'operadora_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -229,19 +234,19 @@ def registrar_elegibilidade_manual_view(request):
     clinic = request.clinic
     data = request.data
 
-    operator_config_id = data.get('operator_config_id')
+    registro_ans = data.get('registro_ans')
     numero_carteira = data.get('numero_carteira')
     numero_guia_operadora = data.get('numero_guia_operadora')
     if 'elegivel' not in data:
         return Response({'error': 'elegivel_obrigatorio'}, status=status.HTTP_400_BAD_REQUEST)
-    if not operator_config_id or not numero_carteira or not numero_guia_operadora:
+    if not registro_ans or not numero_carteira or not numero_guia_operadora:
         return Response(
-            {'error': 'operator_config_id_numero_carteira_e_numero_guia_operadora_obrigatorios'},
+            {'error': 'registro_ans_numero_carteira_e_numero_guia_operadora_obrigatorios'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
-        operator_config = TISSOperatorConfig.objects.get(id=operator_config_id, clinic=clinic)
+        operator_config = TISSOperatorConfig.objects.get(registro_ans=registro_ans, clinic=clinic)
     except TISSOperatorConfig.DoesNotExist:
         return Response({'error': 'operadora_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
 

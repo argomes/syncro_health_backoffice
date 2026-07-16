@@ -128,7 +128,7 @@ class ElegibilidadeEndpointTests(TestCase):
     def test_verificar_endpoint_exige_license_key(self):
         response = self.client.post(
             '/api/tiss/elegibilidade/verificar/',
-            {'operator_config_id': str(self.op.id), 'numero_carteira': 'CARTEIRA-7'},
+            {'registro_ans': self.op.registro_ans, 'numero_carteira': 'CARTEIRA-7'},
             format='json',
         )
         self.assertEqual(response.status_code, 401)
@@ -136,7 +136,7 @@ class ElegibilidadeEndpointTests(TestCase):
     def test_verificar_endpoint_com_license_key_retorna_201(self):
         response = self.client.post(
             '/api/tiss/elegibilidade/verificar/',
-            {'operator_config_id': str(self.op.id), 'numero_carteira': 'CARTEIRA-8', 'mock_scenario': 'success'},
+            {'registro_ans': self.op.registro_ans, 'numero_carteira': 'CARTEIRA-8', 'mock_scenario': 'success'},
             format='json',
             HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
         )
@@ -152,7 +152,7 @@ class ElegibilidadeEndpointTests(TestCase):
         )
         response = self.client.post(
             '/api/tiss/elegibilidade/verificar/',
-            {'operator_config_id': str(outro_op.id), 'numero_carteira': 'CARTEIRA-9'},
+            {'registro_ans': outro_op.registro_ans, 'numero_carteira': 'CARTEIRA-9'},
             format='json',
             HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
         )
@@ -162,7 +162,7 @@ class ElegibilidadeEndpointTests(TestCase):
         response = self.client.post(
             '/api/tiss/elegibilidade/manual/',
             {
-                'operator_config_id': str(self.op.id), 'numero_carteira': 'CARTEIRA-10',
+                'registro_ans': self.op.registro_ans, 'numero_carteira': 'CARTEIRA-10',
                 'numero_guia_operadora': '', 'elegivel': True,
             },
             format='json',
@@ -174,7 +174,7 @@ class ElegibilidadeEndpointTests(TestCase):
         response = self.client.post(
             '/api/tiss/elegibilidade/manual/',
             {
-                'operator_config_id': str(self.op.id), 'numero_carteira': 'CARTEIRA-11',
+                'registro_ans': self.op.registro_ans, 'numero_carteira': 'CARTEIRA-11',
                 'numero_guia_operadora': 'GUIA-MANUAL-002', 'elegivel': False,
             },
             format='json',
