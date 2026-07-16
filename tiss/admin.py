@@ -3,7 +3,10 @@ from django.http import HttpResponse
 from django.utils.html import format_html
 
 from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
-from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta
+from .models import (
+    TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
+    TUSSProcedureCode, ANSInsuranceOperator,
+)
 from .services import enviar_lote, TISSServiceError
 
 
@@ -101,3 +104,21 @@ class TISSElegibilidadeConsultaAdmin(TenantScopedAdminMixin, BaseAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False
+
+
+@admin.register(TUSSProcedureCode)
+class TUSSProcedureCodeAdmin(admin.ModelAdmin):
+    # Tabela mestre global (sem clinic FK) — quem administra é a equipe
+    # SyncroHealth, não TenantScopedAdminMixin.
+    list_display = ('tuss_code', 'description', 'table_code', 'updated_at')
+    list_filter = ('table_code',)
+    search_fields = ('tuss_code', 'description')
+    readonly_fields = ('updated_at',)
+
+
+@admin.register(ANSInsuranceOperator)
+class ANSInsuranceOperatorAdmin(admin.ModelAdmin):
+    list_display = ('ans_code', 'name', 'cnpj', 'active', 'updated_at')
+    list_filter = ('active',)
+    search_fields = ('ans_code', 'name', 'cnpj')
+    readonly_fields = ('updated_at',)

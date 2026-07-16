@@ -1,6 +1,9 @@
 from rest_framework import serializers
 
-from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta
+from .models import (
+    TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
+    TUSSProcedureCode, ANSInsuranceOperator,
+)
 
 
 class TISSOperatorConfigSerializer(serializers.ModelSerializer):
@@ -91,3 +94,15 @@ class TISSElegibilidadeConsultaSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id', 'elegivel', 'motivos_negativa', 'erro_mensagem', 'created_at',
         ]
+
+
+class TUSSProcedureCodeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TUSSProcedureCode
+        fields = ['tuss_code', 'description', 'table_code', 'updated_at']
+
+
+class ANSInsuranceOperatorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ANSInsuranceOperator
+        fields = ['ans_code', 'name', 'cnpj', 'active', 'updated_at']

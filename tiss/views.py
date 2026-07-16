@@ -7,10 +7,13 @@ from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic
 from clinics.permissions import IsAuthenticatedByLicenseKey
 
-from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSLoteStatus, TISSElegibilidadeConsulta
+from .models import (
+    TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSLoteStatus, TISSElegibilidadeConsulta,
+    TUSSProcedureCode, ANSInsuranceOperator,
+)
 from .serializers import (
     TISSOperatorConfigSerializer, TISSLoteSerializer, TISSGuiaSerializer, TISSGlosaSerializer,
-    TISSElegibilidadeConsultaSerializer,
+    TISSElegibilidadeConsultaSerializer, TUSSProcedureCodeSerializer, ANSInsuranceOperatorSerializer,
 )
 from .permissions import IsTISSAuthorized
 from .services import (
@@ -219,6 +222,71 @@ def verificar_elegibilidade(request):
         mock_scenario=data.get('mock_scenario', 'success'),
     )
     return Response(TISSElegibilidadeConsultaSerializer(consulta).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def procedure_code_lookup(request, tuss_code):
+    """
+    GET /api/tiss/reference/procedure-codes/{tuss_code}/ — consumido pelo
+    Edge Gateway em cache-aside: o gateway busca aqui só quando não encontra
+    localmente, e persiste a resposta no SQLite da clínica para não bater
+    aqui de novo no mesmo código. Sem escopo de clínica — dado regulatório
+    público (TUSS), igual pra todos.
+    """
+    try:
+        code = TUSSProcedureCode.objects.get(tuss_code=tuss_code)
+    except TUSSProcedureCode.DoesNotExist:
+        return Response({'error': 'codigo_tuss_nao_encontrado'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(TUSSProcedureCodeSerializer(code).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def insurance_operator_lookup(request, ans_code):
+    """
+    GET /api/tiss/reference/operators/{ans_code}/ — mesmo padrão cache-aside
+    de procedure_code_lookup, para operadoras (registro ANS).
+    """
+    try:
+        operator = ANSInsuranceOperator.objects.get(ans_code=ans_code)
+    except ANSInsuranceOperator.DoesNotExist:
+        return Response({'error': 'operadora_ans_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(ANSInsuranceOperatorSerializer(operator).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def procedure_code_search(request):
+    """
+    GET /api/tiss/reference/procedure-codes/search/?q=... — usado pelo
+    gateway quando a busca LOCAL (SQLite da clínica) não encontra nada:
+    a tabela completa (~6 mil códigos TUSS 22) só existe aqui, o gateway
+    nunca replica ela inteira, só cacheia sob demanda o que a clínica usou.
+    """
+    q = request.query_params.get('q', '').strip()
+    if not q:
+        return Response({'error': 'parametro_q_obrigatorio'}, status=status.HTTP_400_BAD_REQUEST)
+    codes = TUSSProcedureCode.objects.filter(
+        Q(tuss_code__icontains=q) | Q(description__icontains=q)
+    ).order_by('description')[:50]
+    return Response(TUSSProcedureCodeSerializer(codes, many=True).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def insurance_operator_search(request):
+    """
+    GET /api/tiss/reference/operators/search/?q=... — mesmo padrão de
+    procedure_code_search, para operadoras por nome/registro ANS.
+    """
+    q = request.query_params.get('q', '').strip()
+    if not q:
+        return Response({'error': 'parametro_q_obrigatorio'}, status=status.HTTP_400_BAD_REQUEST)
+    operators = ANSInsuranceOperator.objects.filter(
+        Q(name__icontains=q) | Q(ans_code__icontains=q)
+    ).order_by('name')[:50]
+    return Response(ANSInsuranceOperatorSerializer(operators, many=True).data)
 
 
 @api_view(['POST'])

@@ -265,3 +265,46 @@ class TISSElegibilidadeConsulta(models.Model):
     def clean(self):
         if self.origem == TISSElegibilidadeOrigem.MANUAL and not self.numero_guia_operadora:
             raise ValidationError('numero_guia_operadora é obrigatório quando origem=manual')
+
+
+class TUSSProcedureCode(models.Model):
+    """
+    Tabela mestre de códigos TUSS — fonte de verdade única (EDGW-013/BACFF).
+    O Edge Gateway consulta aqui sob demanda (cache-aside) e persiste uma
+    cópia local no SQLite da clínica; buscas seguintes batem só no local
+    até uma nova entrada aparecer aqui. Dado regulatório público, não é
+    dado de clínica — sem FK a Clinic.
+    """
+    tuss_code = models.CharField(max_length=10, primary_key=True)
+    description = models.CharField(max_length=255)
+    table_code = models.CharField(max_length=2, default='22', help_text="'22'=médico, '90'=odontológico")
+    updated_at = models.DateTimeField(auto_now=True, help_text='Usado pelo gateway para invalidar cache local quando a ANS atualizar este registro')
+
+    class Meta:
+        verbose_name = 'Código TUSS (referência)'
+        verbose_name_plural = 'Códigos TUSS (referência)'
+        indexes = [models.Index(fields=['table_code'])]
+
+    def __str__(self):
+        return f'{self.tuss_code} — {self.description}'
+
+
+class ANSInsuranceOperator(models.Model):
+    """
+    Tabela mestre de operadoras (registro ANS) — mesmo papel de
+    TUSSProcedureCode, ver docstring acima. Não confundir com
+    TISSOperatorConfig (que é a credencial/config DE UMA CLÍNICA para uma
+    operadora já cadastrada aqui).
+    """
+    ans_code = models.CharField(max_length=10, primary_key=True)
+    name = models.CharField(max_length=100)
+    cnpj = models.CharField(max_length=14, blank=True)
+    active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True, help_text='Usado pelo gateway para invalidar cache local quando a ANS atualizar este registro')
+
+    class Meta:
+        verbose_name = 'Operadora ANS (referência)'
+        verbose_name_plural = 'Operadoras ANS (referência)'
+
+    def __str__(self):
+        return f'{self.name} ({self.ans_code})'

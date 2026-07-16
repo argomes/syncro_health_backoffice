@@ -335,8 +335,17 @@ ASAAS_WEBHOOK_TOKEN = env('ASAAS_WEBHOOK_TOKEN', default='')
 # garantia de TTL da TemporaryKey (ver TASK-042, nota de revisão de
 # segurança). Reaproveita o Redis do Celery broker, DB separado (1) por
 # padrão para não misturar namespaces.
+import sys
+
+TESTING = 'test' in sys.argv or 'pytest' in sys.modules
+
 CACHE_URL = env('CACHE_URL', default='')
-if CACHE_URL:
+if TESTING:
+    # Teste unitário nunca deve depender de Redis real rodando na máquina —
+    # LocMemCache isola cada execução e evita falha por infra ausente,
+    # independente do que CACHE_URL apontar no .env local.
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+elif CACHE_URL:
     CACHES = {
         'default': {
             'BACKEND': 'django.core.cache.backends.redis.RedisCache',
