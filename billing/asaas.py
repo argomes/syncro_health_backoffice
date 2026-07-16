@@ -30,7 +30,10 @@ class AsaasClient:
         clean_cnpj_cpf = cnpj_cpf.replace('.', '').replace('/', '').replace('-', '').strip()
         if self.is_mock:
             mock_id = f"cus_mock_{clean_cnpj_cpf}"
-            logger.info("AsaasClient (MOCK): Criando cliente %s -> %s", name, mock_id)
+            # BACFF-009 (LGPD): nunca logar nome/CPF-CNPJ do cliente — nem o
+            # mock_id, que embute o documento limpo (usado como retorno pro
+            # chamador, não deve vazar para o log).
+            logger.info("AsaasClient (MOCK): cliente criado com sucesso")
             return mock_id
 
         payload = {
@@ -48,7 +51,9 @@ class AsaasClient:
                 data = response.json()
                 return data['id']
         except Exception as exc:
-            logger.error("AsaasClient: erro ao criar cliente %s. Erro: %s", name, str(exc))
+            # BACFF-009 (LGPD): nunca logar nome/CPF-CNPJ do cliente — só o
+            # detalhe técnico da falha (resposta da API, timeout, etc.).
+            logger.error("AsaasClient: erro ao criar cliente no ASAAS. Erro: %s", str(exc))
             raise RuntimeError(f"Erro ao criar cliente no ASAAS: {str(exc)}") from exc
 
     def create_subscription(

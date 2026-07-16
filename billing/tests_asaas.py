@@ -43,6 +43,23 @@ class AsaasIntegrationTests(TestCase):
         sub_id = client.create_subscription(cust_id, 299.99)
         self.assertEqual(sub_id, f'sub_mock_{cust_id}')
 
+    def test_create_customer_does_not_log_name_or_document(self):
+        """
+        BACFF-009 (LGPD): create_customer não pode logar nome nem CPF/CNPJ do
+        cliente — nem em sucesso (mock_id embutia o documento limpo), nem em
+        falha (nome era interpolado direto na mensagem de erro).
+        """
+        client = AsaasClient()
+        name = 'Fulano de Tal Sensível'
+        document = '123.456.789-00'
+
+        with self.assertLogs('billing.asaas', level='INFO') as captured:
+            client.create_customer(name, document)
+
+        full_log = '\n'.join(captured.output)
+        self.assertNotIn(name, full_log)
+        self.assertNotIn('12345678900', full_log)
+
     @override_settings(ASAAS_WEBHOOK_TOKEN=WEBHOOK_TOKEN)
     def test_webhook_rejects_missing_token(self):
         """Webhook sem header asaas-access-token retorna 401."""
