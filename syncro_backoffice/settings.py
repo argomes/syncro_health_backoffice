@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from datetime import timedelta
 import environ
@@ -363,7 +364,21 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 # Em desenvolvimento, executa tasks de forma síncrona (sem broker Redis).
-# Sobrescreva com CELERY_TASK_ALWAYS_EAGER=False no .env de produção.
+#
+# BACFF-010: antes, o default era `DEBUG` — se DEBUG=True vazasse para
+# produção (mesma classe de erro já corrigida em CACHE_URL/TISS_FERNET_KEY/
+# CORS_ALLOW_ALL_ORIGINS), tasks Celery (sync com Edge, Notion) passariam a
+# rodar sincronamente na thread HTTP, podendo causar timeout de requisição
+# do usuário sem nenhum aviso. Mesmo padrão de fail-fast: em produção
+# (DEBUG=False), a variável precisa estar explicitamente definida no
+# ambiente — nunca depender implicitamente de DEBUG.
+if not DEBUG and 'CELERY_TASK_ALWAYS_EAGER' not in os.environ:
+    raise RuntimeError(
+        'CELERY_TASK_ALWAYS_EAGER não configurado explicitamente com '
+        'DEBUG=False. Defina CELERY_TASK_ALWAYS_EAGER=False no ambiente de '
+        'produção (broker Redis real) — não deve depender implicitamente '
+        'de DEBUG, sob risco de tasks rodarem síncronas na thread HTTP.'
+    )
 CELERY_TASK_ALWAYS_EAGER = env.bool('CELERY_TASK_ALWAYS_EAGER', default=DEBUG)
 
 STATIC_URL = 'static/'

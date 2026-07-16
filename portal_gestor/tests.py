@@ -353,8 +353,9 @@ class CacheBackendProductionGuardTest(TestCase):
         self.assertIn('CACHE_URL', result.stderr)
 
     def test_debug_false_with_cache_url_boots(self):
-        # TISS_FERNET_KEY e EMAIL_* também são exigidos com DEBUG=False (ver
-        # TissFernetKeyProductionGuardTest e TASK-BO-12 em settings.py) —
+        # TISS_FERNET_KEY, EMAIL_* e CELERY_TASK_ALWAYS_EAGER também são
+        # exigidos com DEBUG=False (ver TissFernetKeyProductionGuardTest,
+        # CeleryEagerProductionGuardTest e TASK-BO-12 em settings.py) —
         # setar aqui pra isolar o que este teste quer provar (o guard de
         # CACHE_URL).
         result = self._boot_with_env({
@@ -365,6 +366,7 @@ class CacheBackendProductionGuardTest(TestCase):
             'EMAIL_HOST_USER': 'emailapikey',
             'EMAIL_HOST_PASSWORD': 'placeholder-token',
             'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
+            'CELERY_TASK_ALWAYS_EAGER': 'False',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -399,10 +401,14 @@ class TissFernetKeyProductionGuardTest(TestCase):
         return result
 
     def test_debug_false_without_tiss_fernet_key_fails_fast(self):
+        # CELERY_TASK_ALWAYS_EAGER também é exigido com DEBUG=False (ver
+        # CeleryEagerProductionGuardTest) — setar aqui pra isolar o que este
+        # teste quer provar (o guard de TISS_FERNET_KEY).
         result = self._boot_with_env({
             'DEBUG': 'False',
             'CACHE_URL': 'redis://localhost:6379/1',
             'TISS_FERNET_KEY': '',
+            'CELERY_TASK_ALWAYS_EAGER': 'False',
         })
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn('TISS_FERNET_KEY', result.stderr)
@@ -416,11 +422,67 @@ class TissFernetKeyProductionGuardTest(TestCase):
             'EMAIL_HOST_USER': 'emailapikey',
             'EMAIL_HOST_PASSWORD': 'placeholder-token',
             'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
+            'CELERY_TASK_ALWAYS_EAGER': 'False',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_debug_true_without_tiss_fernet_key_boots_with_placeholder(self):
         result = self._boot_with_env({'DEBUG': 'True', 'TISS_FERNET_KEY': ''})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class CeleryEagerProductionGuardTest(TestCase):
+    """
+    BACFF-010: CELERY_TASK_ALWAYS_EAGER não pode depender implicitamente de
+    DEBUG — se DEBUG=True vazasse para produção (mesma classe de erro já
+    corrigida em CACHE_URL/TISS_FERNET_KEY/CORS_ALLOW_ALL_ORIGINS), tasks
+    Celery (sync com Edge, Notion) passariam a rodar sincronamente na thread
+    HTTP. settings.py deve falhar cedo (RuntimeError no boot) se DEBUG=False
+    e CELERY_TASK_ALWAYS_EAGER não estiver configurado explicitamente.
+
+    Roda em subprocesso pelo mesmo motivo das classes acima: settings já
+    está carregado no processo de teste.
+    """
+
+    def _boot_with_env(self, extra_env):
+        env = os.environ.copy()
+        env.update(extra_env)
+        result = subprocess.run(
+            [sys.executable, '-c', 'import django; django.setup()'],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result
+
+    def test_debug_false_without_celery_eager_fails_fast(self):
+        env = {'DEBUG': 'False', 'CACHE_URL': 'redis://localhost:6379/1',
+               'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+               'EMAIL_HOST': 'smtp.zeptomail.com', 'EMAIL_HOST_USER': 'emailapikey',
+               'EMAIL_HOST_PASSWORD': 'placeholder-token',
+               'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br'}
+        env.pop('CELERY_TASK_ALWAYS_EAGER', None)
+        result = self._boot_with_env(env)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('CELERY_TASK_ALWAYS_EAGER', result.stderr)
+
+    def test_debug_false_with_celery_eager_boots(self):
+        result = self._boot_with_env({
+            'DEBUG': 'False',
+            'CACHE_URL': 'redis://localhost:6379/1',
+            'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+            'EMAIL_HOST': 'smtp.zeptomail.com',
+            'EMAIL_HOST_USER': 'emailapikey',
+            'EMAIL_HOST_PASSWORD': 'placeholder-token',
+            'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
+            'CELERY_TASK_ALWAYS_EAGER': 'False',
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_debug_true_without_celery_eager_boots_with_default(self):
+        result = self._boot_with_env({'DEBUG': 'True'})
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
