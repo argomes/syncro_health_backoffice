@@ -171,13 +171,31 @@ def _is_mock_enabled() -> bool:
     return getattr(settings, 'TISS_SOAP_MOCK', False)
 
 
+def _strip_xml_declaration(xml_string: str) -> str:
+    """
+    Achado ao construir o mock de CI com round-trip HTTP real (não
+    detectável pelo TISS_SOAP_MOCK=true in-process, que nunca serializa/
+    desserializa XML de verdade): xml_completo (de build_lote_xml) já vem
+    com sua própria declaração <?xml ...?>. Embuti-la crua dentro do corpo
+    do envelope SOAP (que também tem a sua) produz um documento com DUAS
+    declarações XML — inválido pela spec (só é permitida no início do
+    documento) e rejeitado por qualquer parser XML estrito, incluindo o do
+    lado da operadora.
+    """
+    stripped = xml_string.lstrip()
+    if stripped.startswith('<?xml'):
+        end = stripped.index('?>') + 2
+        return stripped[end:].lstrip()
+    return xml_string
+
+
 def _build_envelope(xml_mensagem_tiss: str, operation: str = 'tissEnvioDocumentos_Operation') -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<soap:Envelope xmlns:soap="{SOAP_NAMESPACE}">'
         '<soap:Body>'
         f'<{operation} xmlns="http://www.ans.gov.br/padroes/tiss/schemas">'
-        f'{xml_mensagem_tiss}'
+        f'{_strip_xml_declaration(xml_mensagem_tiss)}'
         f'</{operation}>'
         '</soap:Body>'
         '</soap:Envelope>'

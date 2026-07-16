@@ -1,9 +1,31 @@
 from django.test import TestCase, override_settings
 
+from lxml import etree
+
 from .soap_client import (
-    enviar_lote, verificar_elegibilidade,
+    enviar_lote, verificar_elegibilidade, _build_envelope,
     SOAPSuccessResult, SOAPFaultResult, ElegibilidadeResult,
 )
+
+
+class BuildEnvelopeTests(TestCase):
+    """
+    Achado ao construir o mock de CI com round-trip HTTP real: xml_completo
+    (de build_lote_xml) já tem sua própria declaração <?xml ...?>. Embuti-la
+    crua dentro do corpo do envelope SOAP produzia um documento com DUAS
+    declarações XML — malformado, nunca detectado pelo TISS_SOAP_MOCK=true
+    in-process porque esse caminho nunca serializa/parseia XML de verdade.
+    """
+
+    def test_envelope_com_xml_mensagem_com_declaracao_propria_e_bem_formado(self):
+        xml_com_declaracao = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<mensagemTISS xmlns="http://www.ans.gov.br/padroes/tiss/schemas"><cabecalho/></mensagemTISS>'
+        )
+        envelope = _build_envelope(xml_com_declaracao)
+        # Não levanta XMLSyntaxError — antes da correção, isso falhava com
+        # "XML declaration allowed only at the start of the document".
+        etree.fromstring(envelope.encode('utf-8'))
 
 
 @override_settings(TISS_SOAP_MOCK=True)
