@@ -1,7 +1,12 @@
+import os
+import stat
+import tempfile
 import uuid
 from datetime import timedelta
+from unittest.mock import patch
+
 import jwt
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -10,6 +15,12 @@ from clinics.models import Clinic, ClinicStatus, Plan, ProvisioningStatus
 from clinics.service_tokens import generate_or_load_keys, generate_service_token, decode_service_token
 
 
+# BACFF-006: o test runner do Django força DEBUG=False por padrão (mesmo com
+# DEBUG=True no .env), então generate_or_load_keys() levantaria RuntimeError
+# em todo teste que gera/usa um Service Token — estes testes cobrem o fluxo
+# de geração/uso de token em si (não o guard de produção, que tem teste
+# próprio abaixo com override explícito), então rodam sob DEBUG=True.
+@override_settings(DEBUG=True)
 class ServiceTokenTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -28,6 +39,60 @@ class ServiceTokenTests(TestCase):
         priv, pub = generate_or_load_keys()
         self.assertTrue(priv.startswith(b'-----BEGIN PRIVATE KEY-----') or priv.startswith(b'-----BEGIN RSA PRIVATE KEY-----'))
         self.assertTrue(pub.startswith(b'-----BEGIN PUBLIC KEY-----'))
+
+    def test_generate_or_load_keys_raises_in_production_without_env_keys(self):
+        """
+        BACFF-006: com DEBUG=False e sem SERVICE_TOKEN_PRIVATE_KEY/PUBLIC_KEY
+        em env/settings/disco, gerar a chave silenciosamente não é aceitável
+        em produção — deve levantar RuntimeError.
+
+        Usa um BASE_DIR temporário isolado: `generate_or_load_keys()` escreve
+        `.service_jwt_private.pem`/`.service_jwt_public.pem` na raiz de
+        `settings.BASE_DIR`, que no ambiente real de dev é o próprio checkout
+        do projeto — apontar para lá apagaria/regeneraria a chave de serviço
+        real usada por esta máquina a cada `manage.py test`.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.settings(
+                BASE_DIR=tmp_dir,
+                DEBUG=False,
+                SERVICE_TOKEN_PRIVATE_KEY=None,
+                SERVICE_TOKEN_PUBLIC_KEY=None,
+            ):
+                with patch.dict(os.environ, {'SERVICE_TOKEN_PRIVATE_KEY': '', 'SERVICE_TOKEN_PUBLIC_KEY': ''}):
+                    with self.assertRaises(RuntimeError):
+                        generate_or_load_keys()
+
+    def test_generate_or_load_keys_sets_restrictive_permissions_in_debug(self):
+        """
+        BACFF-006: em DEBUG=True sem env vars configuradas, a chave privada
+        gerada em disco deve ter permissão 0o600 (só o dono lê/escreve) e a
+        pública 0o640.
+
+        Mesmo isolamento via BASE_DIR temporário do teste acima — nunca tocar
+        nos arquivos `.service_jwt_*.pem` reais do checkout local.
+        """
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            priv_path = Path(tmp_dir) / '.service_jwt_private.pem'
+            pub_path = Path(tmp_dir) / '.service_jwt_public.pem'
+
+            with self.settings(
+                BASE_DIR=tmp_dir,
+                DEBUG=True,
+                SERVICE_TOKEN_PRIVATE_KEY=None,
+                SERVICE_TOKEN_PUBLIC_KEY=None,
+            ):
+                with patch.dict(os.environ, {'SERVICE_TOKEN_PRIVATE_KEY': '', 'SERVICE_TOKEN_PUBLIC_KEY': ''}):
+                    generate_or_load_keys()
+
+            self.assertTrue(priv_path.exists())
+            priv_mode = stat.S_IMODE(os.stat(priv_path).st_mode)
+            self.assertEqual(priv_mode, 0o600)
+
+            pub_mode = stat.S_IMODE(os.stat(pub_path).st_mode)
+            self.assertEqual(pub_mode, 0o640)
 
     def test_jwt_encode_decode(self):
         """Testa codificação e decodificação do service token."""

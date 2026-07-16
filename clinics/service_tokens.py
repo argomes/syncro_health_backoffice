@@ -26,6 +26,19 @@ def generate_or_load_keys() -> tuple[bytes, bytes]:
     if priv_path.exists() and pub_path.exists():
         return priv_path.read_bytes(), pub_path.read_bytes()
 
+    # BACFF-006: em produção (DEBUG=False), a chave privada do Service Token
+    # DEVE vir de variável de ambiente/secret manager — gerar em disco
+    # silenciosamente aqui equivaleria a uma chave RSA nova e não gerenciada
+    # a cada deploy/restart (e sem rotação nem backup), além do arquivo local
+    # não ser um segredo devidamente protegido/auditado.
+    if not settings.DEBUG:
+        raise RuntimeError(
+            'SERVICE_TOKEN_PRIVATE_KEY/SERVICE_TOKEN_PUBLIC_KEY não configurados '
+            'com DEBUG=False. Em produção a chave RSA do Service Token deve vir '
+            'de variável de ambiente/secret manager — gerar e salvar em disco '
+            'silenciosamente não é aceitável fora de desenvolvimento.'
+        )
+
     # Gera nova chave RSA
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = private_key.private_bytes(
@@ -39,7 +52,9 @@ def generate_or_load_keys() -> tuple[bytes, bytes]:
     )
 
     priv_path.write_bytes(private_pem)
+    os.chmod(priv_path, 0o600)
     pub_path.write_bytes(public_pem)
+    os.chmod(pub_path, 0o640)
 
     # Tenta adicionar ao .gitignore para segurança
     gitignore = base_dir / '.gitignore'

@@ -20,18 +20,35 @@ _BLOCKED_NETWORKS = [
 ]
 
 
-def _is_safe_url(url: str) -> bool:
-    """Retorna True apenas se a URL usa http/https e não aponta para IP privado/loopback."""
+def _resolve_safe_ip(url: str):
+    """
+    Resolve o hostname da URL UMA ÚNICA VEZ e retorna o IP resolvido se ele
+    não estiver em rede bloqueada (privada/loopback/link-local). Retorna
+    None se a URL for inválida ou o IP resolvido for bloqueado.
+
+    Resolver o IP aqui e reutilizá-lo na requisição real (em vez de deixar o
+    httpx resolver o DNS de novo) evita janela de DNS rebinding: um atacante
+    que controle o DNS do hostname poderia apontar para um IP público na
+    validação e trocar para um IP bloqueado (ex.: 169.254.169.254, IMDS da
+    AWS) bem a tempo da requisição real.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ('http', 'https'):
-        return False
+        return None
     if not parsed.hostname:
-        return False
+        return None
     try:
         ip = ipaddress.ip_address(socket.gethostbyname(parsed.hostname))
-        return not any(ip in net for net in _BLOCKED_NETWORKS)
     except Exception:
-        return False
+        return None
+    if any(ip in net for net in _BLOCKED_NETWORKS):
+        return None
+    return ip
+
+
+def _is_safe_url(url: str) -> bool:
+    """Retorna True apenas se a URL usa http/https e não aponta para IP privado/loopback."""
+    return _resolve_safe_ip(url) is not None
 
 
 def sync_clinic_modules(clinic) -> bool:
@@ -45,7 +62,8 @@ def sync_clinic_modules(clinic) -> bool:
         logger.info("sync_clinic_modules ignorado: sem gateway_url configurado para clínica %s", str(clinic.id))
         return False
 
-    if not _is_safe_url(clinic.gateway_url):
+    safe_ip = _resolve_safe_ip(clinic.gateway_url)
+    if safe_ip is None:
         logger.error(
             "sync_clinic_modules bloqueado: gateway_url inválida ou IP privado na clínica %s url=%s",
             str(clinic.id),
@@ -60,10 +78,18 @@ def sync_clinic_modules(clinic) -> bool:
         expires_in_hours=1,  # Token temporário de 1 hora
     )
 
-    url = f"{clinic.gateway_url.rstrip('/')}/api/v1/sync/modules"
+    parsed = urlparse(clinic.gateway_url.rstrip('/'))
+    # Usa o IP JÁ resolvido e validado (não o hostname) na requisição real —
+    # se deixássemos o httpx resolver o DNS de novo aqui, um atacante que
+    # controle o DNS do hostname poderia trocar a resposta entre a validação
+    # acima e esta chamada (DNS rebinding) e escapar do bloqueio de SSRF.
+    netloc = f'{safe_ip}:{parsed.port}' if parsed.port else str(safe_ip)
+    resolved_url = parsed._replace(netloc=netloc).geturl()
+    url = f"{resolved_url}/api/v1/sync/modules"
     headers = {
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json',
+        'Host': parsed.hostname,
     }
     payload = {
         'clinic_id': str(clinic.id),

@@ -128,33 +128,6 @@ class ClinicViewSet(viewsets.ModelViewSet):
         ).distinct()
 
 @api_view(['POST'])
-def validate_license_production(request):
-    """
-    POST /api/clinics/license/validate
-    Valida licença em produção (sem cache)
-    """
-    license_key = request.data.get('license_key')
-    if not license_key:
-        return Response({'error': 'missing_license_key'}, status=400)
-
-    try:
-        clinic = Clinic.objects.get(license_key=license_key, status='active')
-    except Clinic.DoesNotExist:
-        return Response({'error': 'invalid_license'}, status=401)
-
-    # Validar expiração (add em modelo: license_expires_at)
-    if clinic.license_expires_at and timezone.now() > clinic.license_expires_at:
-        return Response({'error': 'license_expired'}, status=403)
-
-    return Response({
-        'valid': True,
-        'clinic_id': str(clinic.id),
-        'plan': clinic.plan,
-        'expires_at': clinic.license_expires_at,
-    })
-
-
-@api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([ServiceTokenRateThrottle])
 def issue_service_token(request):

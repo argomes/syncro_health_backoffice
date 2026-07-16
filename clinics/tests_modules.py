@@ -31,9 +31,38 @@ class ClinicModulesTests(TestCase):
         self.assertTrue(result)
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args
-        self.assertEqual(args[0], 'http://edge.clinica-teste.com.br:8080/api/v1/sync/modules')
+        # BACFF-001: a URL da requisição real usa o IP JÁ resolvido/validado,
+        # não o hostname (evita DNS rebinding entre validação e requisição).
+        self.assertEqual(args[0], 'http://203.0.113.10:8080/api/v1/sync/modules')
+        self.assertEqual(kwargs['headers']['Host'], 'edge.clinica-teste.com.br')
         self.assertEqual(kwargs['json']['clinic_id'], str(self.clinic.id))
         self.assertEqual(kwargs['json']['modules'], ['dental'])
+
+    def test_sync_clinic_modules_blocks_dns_rebinding(self):
+        """
+        BACFF-001: se o DNS do gateway_url mudar entre a validação e a
+        requisição real (DNS rebinding), a proteção não pode ser contornada
+        — o IP usado na requisição precisa ser o mesmo resolvido e validado,
+        nunca uma segunda resolução feita pelo httpx.
+        """
+        with patch('clinics.services.socket.gethostbyname') as mock_dns, \
+                patch('httpx.Client.post') as mock_post:
+            # Primeira (e única) chamada de resolução retorna IP público
+            # válido; se o código resolvesse de novo mais adiante (ex.: via
+            # httpx), receberia o IMDS da AWS.
+            mock_dns.side_effect = ['203.0.113.10', '169.254.169.254']
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.raise_for_status = lambda: None
+
+            result = sync_clinic_modules(self.clinic)
+
+            self.assertTrue(result)
+            # DNS só deve ter sido resolvido UMA vez — a requisição real usa
+            # o IP já resolvido, não dispara nova resolução.
+            self.assertEqual(mock_dns.call_count, 1)
+            args, kwargs = mock_post.call_args
+            self.assertIn('203.0.113.10', args[0])
+            self.assertNotIn('169.254.169.254', args[0])
 
     @patch('clinics.services.socket.gethostbyname', return_value='203.0.113.10')
     @patch('httpx.Client.post')

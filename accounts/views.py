@@ -1,10 +1,12 @@
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import viewsets, status, filters
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from clinics.models import Clinic
 from .models import ClinicAccess, SupportUser
@@ -60,6 +62,18 @@ class ClinicAccessViewSet(viewsets.ModelViewSet):
         ClinicAccess.AccessRole.OWNER: 2,
     }
 
+    @classmethod
+    def _get_role_rank(cls, role):
+        """
+        Retorna o rank do role na hierarquia de acesso. BACFF-002: um role
+        desconhecido/inexistente NÃO pode cair silenciosamente em rank 0
+        (viewer) — isso mascararia erro de dados ou tentativa de contornar a
+        checagem de escalação de privilégio com um valor fora do enum.
+        """
+        if role not in cls._ACCESS_ROLE_RANK:
+            raise PermissionDenied('invalid_role')
+        return cls._ACCESS_ROLE_RANK[role]
+
     def perform_create(self, serializer):
         """Cria acesso e registra quem concedeu.
 
@@ -86,8 +100,8 @@ class ClinicAccessViewSet(viewsets.ModelViewSet):
                 raise PermissionDenied('no_access_to_clinic')
 
             # Impedir escalação de privilégio: não pode conceder role maior que o próprio
-            creator_rank = self._ACCESS_ROLE_RANK.get(creator_access.role, 0)
-            requested_rank = self._ACCESS_ROLE_RANK.get(requested_role, 0)
+            creator_rank = self._get_role_rank(creator_access.role)
+            requested_rank = self._get_role_rank(requested_role)
             if requested_rank > creator_rank:
                 raise PermissionDenied('role_escalation_denied')
 
@@ -187,6 +201,30 @@ class ClinicAccessViewSet(viewsets.ModelViewSet):
             'clinics': serializer.data,
             'total': accesses.count(),
         })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def logout(request):
+    """
+    POST /api/auth/logout/
+    BACFF-004: com ACCESS_TOKEN_LIFETIME reduzido mas ainda existente (2h), um
+    refresh token comprometido continuaria válido por até 7 dias (
+    REFRESH_TOKEN_LIFETIME) sem forma de revogação. Recebe o refresh token do
+    SupportUser e o adiciona à blacklist (rest_framework_simplejwt.token_blacklist)
+    — usá-lo novamente (inclusive para obter um novo access token) falha com 401.
+    """
+    refresh_token = request.data.get('refresh')
+    if not refresh_token:
+        return Response({'error': 'missing_refresh_token'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        token = RefreshToken(refresh_token)
+        token.blacklist()
+    except TokenError:
+        return Response({'error': 'invalid_refresh_token'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    return Response(status=status.HTTP_205_RESET_CONTENT)
 
 
 class ClinicFilterPermission:

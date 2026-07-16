@@ -38,6 +38,9 @@ class SystemLog(models.Model):
     )
     level = models.CharField(max_length=10, choices=LogLevel)
     message = models.TextField()
+    # BACFF-005 (LGPD): context não deve conter dados pessoais/PHI — apenas
+    # metadados técnicos (module, duration_ms, error_code, etc). Ver
+    # metrics.views.sanitize_log_context, aplicado antes do bulk_create.
     context = models.JSONField(default=dict, blank=True)
     occurred_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)

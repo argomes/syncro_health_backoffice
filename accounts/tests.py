@@ -3,11 +3,51 @@ from django.test import TestCase
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from clinics.models import Clinic, ClinicStatus, Plan
 from .models import ClinicAccess
 
 User = get_user_model()
+
+
+class SupportUserLogoutTest(APITestCase):
+    """BACFF-004: logout revoga o refresh token via blacklist."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='logout_user',
+            email='logout@test.com',
+            password='logout123',
+            role='admin',
+        )
+
+    def test_logout_blacklists_refresh_token(self):
+        refresh = RefreshToken.for_user(self.user)
+        refresh_str = str(refresh)
+
+        response = self.client.post(
+            '/api/auth/logout/', {'refresh': refresh_str}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
+
+        # Refresh token usado novamente (ex.: para obter novo access token)
+        # deve falhar, pois foi adicionado à blacklist.
+        refresh_response = self.client.post(
+            '/api/auth/refresh/', {'refresh': refresh_str}, format='json'
+        )
+        self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_logout_missing_refresh_token_returns_400(self):
+        response = self.client.post('/api/auth/logout/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_logout_invalid_refresh_token_returns_401(self):
+        response = self.client.post(
+            '/api/auth/logout/', {'refresh': 'not-a-valid-token'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
 class ClinicAccessModelTest(TestCase):
@@ -260,6 +300,35 @@ class ClinicAccessAPITest(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_role_escalation_denied_for_unknown_role(self):
+        """
+        BACFF-002: se o role do criador (ou o role solicitado) não estiver
+        em _ACCESS_ROLE_RANK — por corrupção de dado legado ou um valor fora
+        do enum — o helper _get_role_rank deve levantar PermissionDenied em
+        vez de tratá-lo silenciosamente como rank 0 (viewer), que abriria uma
+        via de bypass da checagem de escalação de privilégio.
+        """
+        # support_user tem acesso a clinic1, mas com um role corrompido/desconhecido
+        # (bypassa a validação do serializer usando update() no queryset).
+        ClinicAccess.objects.create(
+            support_user=self.support_user,
+            clinic=self.clinic1,
+            role='viewer',
+            granted_by=self.admin_user,
+        )
+        ClinicAccess.objects.filter(
+            support_user=self.support_user, clinic=self.clinic1
+        ).update(role='legacy_super_role')
+
+        self.client.force_authenticate(user=self.support_user)
+        response = self.client.post('/api/accounts/clinic-access/', {
+            'support_user': self.billing_user.id,
+            'clinic': self.clinic1.id,
+            'role': 'viewer',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_unauthenticated_access_fails(self):
         """Acesso sem autenticação retorna 401."""

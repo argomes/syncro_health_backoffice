@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     
     # third-party
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     # local
     'accounts',
@@ -153,15 +154,31 @@ REST_FRAMEWORK = {
 }
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
+# BACFF-004: ACCESS_TOKEN_LIFETIME reduzido de 8h para 2h. Não encontramos,
+# neste repositório, um interceptor de refresh automático (silent refresh em
+# 401) no frontend do backoffice — não há um cliente SPA correspondente aqui
+# (o portal_gestor é servido via templates Django + cookies httpOnly, e o
+# único código React encontrado é um scaffold de template não relacionado ao
+# produto). Sem confirmação de refresh transparente, 30min quebraria a UX de
+# um admin logado; 2h é um meio-termo até o refresh automático existir e
+# permitir reduzir ainda mais.
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=2),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
+# BACFF-007: CORS_ALLOW_ALL_ORIGINS nunca deve depender de DEBUG — se DEBUG=True
+# vazar para staging/produção (erro comum de .env mal gerenciado), CORS ficaria
+# totalmente aberto, permitindo requisição cross-origin autenticada usando as
+# credenciais do navegador do admin logado. Fixo em False; origens confiáveis
+# vêm explicitamente de CORS_ALLOWED_ORIGINS (env). Em dev local, configure
+# CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000 no .env.
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
-CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',

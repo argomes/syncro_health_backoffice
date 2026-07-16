@@ -17,6 +17,7 @@ from clinics.views import issue_service_token, get_license_info
 from billing.webhook_views import asaas_webhook
 from syncro_backoffice.throttling import LoginRateThrottle
 from accounts.portal_views import ClinicTokenObtainPairView, ClinicTokenRefreshView, ClinicUserMeView
+from accounts.views import logout as support_logout
 from accounts.password_reset_clinic import ClinicPasswordResetConfirmView, ClinicPasswordResetView
 from portal_gestor.template_views import (
     DashboardFragmentView,
@@ -38,6 +39,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/login/', ThrottledTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/auth/logout/', support_logout, name='support_logout'),
 
     # API v1 contracts
     path('api/v1/auth/service-token/', issue_service_token, name='issue_service_token'),

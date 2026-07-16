@@ -103,6 +103,27 @@ class LogsTests(TestCase):
         response = self._post(logs)
         self.assertEqual(response.data['created'], 1)
 
+    def test_log_context_is_sanitized_against_phi(self):
+        """
+        BACFF-005 (LGPD): o Edge Gateway pode vazar dado pessoal/PHI (ex.:
+        cpf) num context de log por bug — só chaves técnicas da allowlist
+        (module, duration_ms, error_code, endpoint, http_status, retry_count)
+        podem ser persistidas no backoffice.
+        """
+        logs = [
+            {
+                'level': 'error',
+                'message': 'falha ao sincronizar paciente',
+                'context': {'cpf': '123.456.789-00', 'patient_id': 42, 'module': 'sync'},
+                'occurred_at': '2026-06-28T10:00:00Z',
+            },
+        ]
+        response = self._post(logs)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        entry = SystemLog.objects.get(clinic=self.clinic)
+        self.assertEqual(entry.context, {'module': 'sync'})
+
     def test_logs_not_a_list_returns_400(self):
         response = self.client.post(
             self.url,

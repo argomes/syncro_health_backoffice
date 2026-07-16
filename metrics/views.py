@@ -17,6 +17,22 @@ from .models import SystemHeartbeat, SystemLog, LogLevel
 # READY — uma sessão já expired/ready não deve ser reaberta por um ack atrasado.
 _ACKABLE_STATUSES = (ReportSessionStatus.KEY_DELIVERED, ReportSessionStatus.SYNCING)
 
+# BACFF-005 (LGPD): allowlist de chaves técnicas aceitas em SystemLog.context.
+# O Edge Gateway (Go) envia esse campo livremente — sem filtro, um bug de
+# logging lá (ex.: incluir patient_id/cpf num log de erro) persistiria PHI
+# no banco central do backoffice, violando o princípio de "backoffice não
+# guarda PHI" e o Art. 6/11 da LGPD. Só metadados técnicos passam.
+_ALLOWED_LOG_CONTEXT_KEYS = {
+    'module', 'duration_ms', 'error_code', 'endpoint', 'http_status', 'retry_count',
+}
+
+
+def sanitize_log_context(context: dict) -> dict:
+    """Filtra o context recebido do Edge Gateway por allowlist de chaves técnicas."""
+    if not isinstance(context, dict):
+        return {}
+    return {k: v for k, v in context.items() if k in _ALLOWED_LOG_CONTEXT_KEYS}
+
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticatedByLicenseKey])
@@ -95,7 +111,7 @@ def logs(request):
             clinic=clinic,
             level=level,
             message=entry.get('message', ''),
-            context=entry.get('context') or {},
+            context=sanitize_log_context(entry.get('context') or {}),
             occurred_at=occurred_at,
         ))
 
