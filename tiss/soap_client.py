@@ -88,6 +88,51 @@ MOCK_ERROR_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
   </soap:Body>
 </soap:Envelope>"""
 
+# Elegibilidade — estrutura confirmada contra resposta real gerada pelo
+# workspace SoapUI a partir de tissVerificaElegibilidadeV4_02_00.wsdl.
+# respostaSolicitacao='S' -> beneficiário elegível, sem motivosNegativa.
+MOCK_ELEGIBILIDADE_SUCCESS_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <respostaElegibilidadeWS xmlns="http://www.ans.gov.br/padroes/tiss/schemas">
+      <respostaElegibilidade>
+        <reciboElegibilidade>
+          <registroANS>MOCK-ANS</registroANS>
+          <numeroCarteira>MOCK-CARTEIRA-000001</numeroCarteira>
+          <nomeBeneficiario>Beneficiario Mock</nomeBeneficiario>
+          <respostaSolicitacao>S</respostaSolicitacao>
+        </reciboElegibilidade>
+      </respostaElegibilidade>
+      <hash>mock-hash</hash>
+    </respostaElegibilidadeWS>
+  </soap:Body>
+</soap:Envelope>"""
+
+# respostaSolicitacao='N' -> beneficiário NÃO elegível, com motivosNegativa
+# preenchido — consulta em si teve sucesso (não é SOAPFaultResult).
+MOCK_ELEGIBILIDADE_NEGATIVA_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <respostaElegibilidadeWS xmlns="http://www.ans.gov.br/padroes/tiss/schemas">
+      <respostaElegibilidade>
+        <reciboElegibilidade>
+          <registroANS>MOCK-ANS</registroANS>
+          <numeroCarteira>MOCK-CARTEIRA-000002</numeroCarteira>
+          <nomeBeneficiario>Beneficiario Mock Inelegivel</nomeBeneficiario>
+          <respostaSolicitacao>N</respostaSolicitacao>
+          <motivosNegativa>
+            <motivoNegativa>
+              <codigoGlosa>1822</codigoGlosa>
+              <descricaoGlosa>Motivo mock configurado para teste</descricaoGlosa>
+            </motivoNegativa>
+          </motivosNegativa>
+        </reciboElegibilidade>
+      </respostaElegibilidade>
+      <hash>mock-hash</hash>
+    </respostaElegibilidadeWS>
+  </soap:Body>
+</soap:Envelope>"""
+
 
 class SOAPClientError(Exception):
     """Falha de rede/HTTP ao chamar o endpoint SOAP da operadora."""
@@ -106,18 +151,34 @@ class SOAPFaultResult:
     raw_response: str
 
 
+@dataclass
+class ElegibilidadeResult:
+    """
+    Resultado de tissVerificaElegibilidade_Operation — diferente de
+    SOAPSuccessResult (envio de lote) porque o payload de negócio é outro:
+    aqui "sucesso de transporte" não significa "beneficiário elegível", a
+    própria resposta carrega elegivel=False com motivosNegativa preenchido
+    quando o beneficiário não está apto (respostaSolicitacao='N' no XSD).
+    """
+    elegivel: bool
+    numero_carteira: str
+    nome_beneficiario: str
+    motivos_negativa: list  # list[tuple[str, str]] de (codigo_glosa, descricao_glosa)
+    raw_response: str
+
+
 def _is_mock_enabled() -> bool:
     return getattr(settings, 'TISS_SOAP_MOCK', False)
 
 
-def _build_envelope(xml_mensagem_tiss: str) -> str:
+def _build_envelope(xml_mensagem_tiss: str, operation: str = 'tissEnvioDocumentos_Operation') -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<soap:Envelope xmlns:soap="{SOAP_NAMESPACE}">'
         '<soap:Body>'
-        '<tissEnvioDocumentos_Operation xmlns="http://www.ans.gov.br/padroes/tiss/schemas">'
+        f'<{operation} xmlns="http://www.ans.gov.br/padroes/tiss/schemas">'
         f'{xml_mensagem_tiss}'
-        '</tissEnvioDocumentos_Operation>'
+        f'</{operation}>'
         '</soap:Body>'
         '</soap:Envelope>'
     )
@@ -166,6 +227,105 @@ def _parse_response(raw_response: str):
             )
 
     raise SOAPClientError('resposta_soap_sem_recibo_nem_fault')
+
+
+def _parse_elegibilidade_response(raw_response: str):
+    """
+    Retorna ElegibilidadeResult ou SOAPFaultResult a partir de
+    respostaElegibilidadeWS (confirmado contra resposta gerada pelo
+    workspace SoapUI a partir de tissVerificaElegibilidadeV4_02_00.wsdl).
+
+    respostaElegibilidade é uma CHOICE:
+    - codigoGlosa/descricaoGlosa -> operadora rejeitou a PRÓPRIA consulta de
+      elegibilidade (ex.: prestador não autorizado) — tratado como
+      SOAPFaultResult, mesmo nível de "rejeição de negócio" da glosa de
+      envio de lote.
+    - reciboElegibilidade -> consulta processada; respostaSolicitacao
+      ('S'/'N') indica se o BENEFICIÁRIO está elegível, não se a consulta
+      teve sucesso — 'N' vem com motivosNegativa (lista de codigoGlosa/
+      descricaoGlosa), mas ainda é um ElegibilidadeResult(elegivel=False),
+      não um SOAPFaultResult (a consulta funcionou, a resposta é negativa).
+    """
+    doc = etree.fromstring(raw_response.encode('utf-8'))
+
+    fault = doc.find('.//{*}tissFaultWS')
+    if fault is not None:
+        codigo_el = fault.find('.//{*}codigoErro')
+        descricao_el = fault.find('.//{*}descricaoErro')
+        return SOAPFaultResult(
+            codigo_erro=(codigo_el.text if codigo_el is not None else ''),
+            descricao_erro=(descricao_el.text if descricao_el is not None else ''),
+            raw_response=raw_response,
+        )
+
+    resposta = doc.find('.//{*}respostaElegibilidade')
+    if resposta is not None:
+        recibo = resposta.find('{*}reciboElegibilidade')
+        if recibo is not None:
+            resposta_solic_el = recibo.find('{*}respostaSolicitacao')
+            elegivel = (resposta_solic_el.text if resposta_solic_el is not None else '') == 'S'
+
+            numero_carteira_el = recibo.find('{*}numeroCarteira')
+            nome_beneficiario_el = recibo.find('{*}nomeBeneficiario')
+
+            motivos_negativa = []
+            for motivo in recibo.findall('{*}motivosNegativa/{*}motivoNegativa'):
+                codigo_el = motivo.find('{*}codigoGlosa')
+                descricao_el = motivo.find('{*}descricaoGlosa')
+                motivos_negativa.append((
+                    codigo_el.text if codigo_el is not None else '',
+                    descricao_el.text if descricao_el is not None else '',
+                ))
+
+            return ElegibilidadeResult(
+                elegivel=elegivel,
+                numero_carteira=(numero_carteira_el.text if numero_carteira_el is not None else ''),
+                nome_beneficiario=(nome_beneficiario_el.text if nome_beneficiario_el is not None else ''),
+                motivos_negativa=motivos_negativa,
+                raw_response=raw_response,
+            )
+
+        codigo_glosa_el = resposta.find('{*}codigoGlosa')
+        if codigo_glosa_el is not None:
+            codigo_el = codigo_glosa_el.find('{*}codigoGlosa')
+            descricao_el = codigo_glosa_el.find('{*}descricaoGlosa')
+            return SOAPFaultResult(
+                codigo_erro=(codigo_el.text if codigo_el is not None else ''),
+                descricao_erro=(descricao_el.text if descricao_el is not None else ''),
+                raw_response=raw_response,
+            )
+
+    raise SOAPClientError('resposta_elegibilidade_sem_recibo_nem_fault')
+
+
+def verificar_elegibilidade(endpoint_url: str, xml_mensagem_tiss: str, mock_scenario: str = 'success'):
+    """
+    Envia a consulta de elegibilidade (tissVerificaElegibilidade_Operation)
+    via SOAP 1.1. Se TISS_SOAP_MOCK=true, intercepta e devolve uma resposta
+    fixa (mock_scenario='success'|'negativa'|'error') sem request de rede.
+    Retorna ElegibilidadeResult ou SOAPFaultResult.
+    """
+    if _is_mock_enabled():
+        mock_responses = {
+            'success': MOCK_ELEGIBILIDADE_SUCCESS_RESPONSE,
+            'negativa': MOCK_ELEGIBILIDADE_NEGATIVA_RESPONSE,
+        }
+        raw = mock_responses.get(mock_scenario, MOCK_ERROR_RESPONSE)
+        logger.info('soap_client: modo mock ativo (TISS_SOAP_MOCK=true), elegibilidade cenário=%s', mock_scenario)
+        return _parse_elegibilidade_response(raw)
+
+    envelope = _build_envelope(xml_mensagem_tiss, operation='tissVerificaElegibilidade_Operation')
+    headers = {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': '""',
+    }
+    try:
+        resp = httpx.post(endpoint_url, content=envelope.encode('utf-8'), headers=headers, timeout=DEFAULT_TIMEOUT)
+    except httpx.HTTPError as exc:
+        logger.error('soap_client: falha de rede ao chamar endpoint de elegibilidade: %s', type(exc).__name__)
+        raise SOAPClientError('soap_network_error') from exc
+
+    return _parse_elegibilidade_response(resp.text)
 
 
 def enviar_lote(endpoint_url: str, xml_mensagem_tiss: str, mock_scenario: str = 'success'):
