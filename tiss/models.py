@@ -195,3 +195,73 @@ class TISSGlosa(models.Model):
         # via API pois TISSGlosa não tem FK direta a Clinic).
         if self.valor_glosado < 0:
             raise ValidationError('valor_glosado não pode ser negativo')
+
+
+class TISSElegibilidadeOrigem(models.TextChoices):
+    """
+    BACFF-013: mesmo padrão já usado em GuiaTISS.Origem no gateway Go
+    (OrigemGuiaAutomatica/OrigemGuiaManual) — a consulta pode ter sido
+    decidida pela integração SOAP automática ou registrada manualmente pela
+    recepção (quando a operadora liga/portal é acessado diretamente).
+    """
+    AUTOMATICA = 'automatica', 'Automática (SOAP)'
+    MANUAL = 'manual', 'Manual (recepção)'
+
+
+class TISSElegibilidadeConsulta(models.Model):
+    """
+    Registro de AUDITORIA de uma consulta de elegibilidade — não é cache do
+    "último status conhecido", é prova de que NAQUELE DIA/HORÁRIO
+    específico o beneficiário estava (ou não) elegível, decisão de produto
+    confirmada com o usuário (BACFF-013). Nunca atualizar um registro
+    existente para refletir uma nova consulta — cada consulta é uma linha
+    nova, imutável após criada.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(Clinic, on_delete=models.PROTECT, related_name='tiss_elegibilidade_consultas')
+    operator_config = models.ForeignKey(
+        TISSOperatorConfig, on_delete=models.PROTECT, related_name='elegibilidade_consultas',
+    )
+    appointment_id = models.CharField(
+        max_length=64, blank=True,
+        help_text='ID do agendamento no Edge Gateway (não é FK, mesmo padrão de TISSGuia.appointment_id)',
+    )
+
+    # Dados mínimos do beneficiário — mesmo padrão/justificativa de
+    # TISSGuia.numero_carteira/beneficiario_nome (dado de negócio necessário
+    # à auditoria, nunca aparece em log).
+    numero_carteira = models.CharField(max_length=20)
+    beneficiario_nome = models.CharField(max_length=70, blank=True)
+
+    origem = models.CharField(max_length=10, choices=TISSElegibilidadeOrigem, default=TISSElegibilidadeOrigem.AUTOMATICA)
+    elegivel = models.BooleanField()
+    motivos_negativa = models.JSONField(default=list, blank=True, help_text='Lista de {codigo, descricao} quando elegivel=False')
+
+    # Obrigatório apenas quando origem=MANUAL (recepcionista confirmou por
+    # telefone/portal da operadora e digitou o número gerado) — ver clean().
+    numero_guia_operadora = models.CharField(max_length=20, blank=True)
+
+    # Auditoria da chamada SOAP real (quando origem=AUTOMATICA) — nunca
+    # incluído em log, só persistido aqui.
+    xml_enviado = models.TextField(blank=True)
+    xml_recebido = models.TextField(blank=True)
+    erro_mensagem = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Consulta de Elegibilidade TISS'
+        verbose_name_plural = 'Consultas de Elegibilidade TISS'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['clinic', 'numero_carteira']),
+            models.Index(fields=['clinic', 'created_at']),
+            models.Index(fields=['clinic', 'appointment_id']),
+        ]
+
+    def __str__(self):
+        return f'Elegibilidade {self.numero_carteira} — {self.clinic.name} ({self.origem}, elegivel={self.elegivel})'
+
+    def clean(self):
+        if self.origem == TISSElegibilidadeOrigem.MANUAL and not self.numero_guia_operadora:
+            raise ValidationError('numero_guia_operadora é obrigatório quando origem=manual')

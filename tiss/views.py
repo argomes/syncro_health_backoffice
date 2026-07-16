@@ -5,13 +5,18 @@ from rest_framework.response import Response
 
 from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic
+from clinics.permissions import IsAuthenticatedByLicenseKey
 
-from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSLoteStatus
+from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSLoteStatus, TISSElegibilidadeConsulta
 from .serializers import (
     TISSOperatorConfigSerializer, TISSLoteSerializer, TISSGuiaSerializer, TISSGlosaSerializer,
+    TISSElegibilidadeConsultaSerializer,
 )
 from .permissions import IsTISSAuthorized
-from .services import enviar_lote, TISSServiceError
+from .services import (
+    enviar_lote, TISSServiceError,
+    consultar_elegibilidade_automatica, registrar_elegibilidade_manual,
+)
 
 
 def _allowed_clinic_ids(user):
@@ -167,3 +172,90 @@ def estatisticas(request):
         ],
         'por_operadora': por_operadora,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def verificar_elegibilidade(request):
+    """
+    POST /api/tiss/elegibilidade/verificar/ — consumido pelo Edge Gateway
+    (autenticado por license_key, mesmo padrão de metrics.heartbeat), nunca
+    diretamente por um usuário do backoffice. Consulta síncrona: a
+    recepcionista está esperando a resposta na hora (BACFF-013 — diferente
+    do fluxo de lote, que é assíncrono).
+
+    Body: {operator_config_id, numero_carteira, beneficiario_nome?,
+           appointment_id?, mock_scenario?}
+    """
+    clinic = request.clinic
+    data = request.data
+
+    operator_config_id = data.get('operator_config_id')
+    numero_carteira = data.get('numero_carteira')
+    if not operator_config_id or not numero_carteira:
+        return Response(
+            {'error': 'operator_config_id_e_numero_carteira_obrigatorios'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        # isolamento: operator_config precisa pertencer à MESMA clínica do
+        # license_key autenticado — nunca consultar config de outra clínica.
+        operator_config = TISSOperatorConfig.objects.get(id=operator_config_id, clinic=clinic)
+    except TISSOperatorConfig.DoesNotExist:
+        return Response({'error': 'operadora_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    consulta = consultar_elegibilidade_automatica(
+        clinic=clinic,
+        operator_config=operator_config,
+        numero_carteira=numero_carteira,
+        beneficiario_nome=data.get('beneficiario_nome', ''),
+        appointment_id=data.get('appointment_id', ''),
+        mock_scenario=data.get('mock_scenario', 'success'),
+    )
+    return Response(TISSElegibilidadeConsultaSerializer(consulta).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def registrar_elegibilidade_manual_view(request):
+    """
+    POST /api/tiss/elegibilidade/manual/ — fallback de primeira classe
+    (BACFF-013): recepcionista confirmou por telefone/portal da operadora e
+    digitou o número da guia gerado manualmente. numero_guia_operadora é
+    obrigatório (validado em services.registrar_elegibilidade_manual e no
+    model TISSElegibilidadeConsulta.clean()).
+    """
+    clinic = request.clinic
+    data = request.data
+
+    operator_config_id = data.get('operator_config_id')
+    numero_carteira = data.get('numero_carteira')
+    numero_guia_operadora = data.get('numero_guia_operadora')
+    if 'elegivel' not in data:
+        return Response({'error': 'elegivel_obrigatorio'}, status=status.HTTP_400_BAD_REQUEST)
+    if not operator_config_id or not numero_carteira or not numero_guia_operadora:
+        return Response(
+            {'error': 'operator_config_id_numero_carteira_e_numero_guia_operadora_obrigatorios'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        operator_config = TISSOperatorConfig.objects.get(id=operator_config_id, clinic=clinic)
+    except TISSOperatorConfig.DoesNotExist:
+        return Response({'error': 'operadora_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        consulta = registrar_elegibilidade_manual(
+            clinic=clinic,
+            operator_config=operator_config,
+            numero_carteira=numero_carteira,
+            numero_guia_operadora=numero_guia_operadora,
+            elegivel=bool(data.get('elegivel')),
+            beneficiario_nome=data.get('beneficiario_nome', ''),
+            appointment_id=data.get('appointment_id', ''),
+        )
+    except TISSServiceError as exc:
+        return Response({'error': exc.code, 'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    return Response(TISSElegibilidadeConsultaSerializer(consulta).data, status=status.HTTP_201_CREATED)

@@ -4,13 +4,21 @@ envia SOAP (real ou mock) e persiste o resultado. Usado pela ViewSet
 action `enviar` (tiss/views.py).
 """
 import logging
+from xml.sax.saxutils import escape
 
 from django.db import transaction
 
-from .models import TISSLote, TISSLoteStatus, TISSGuia, TISSGuiaStatus, TISSGlosa
+from .models import (
+    TISSLote, TISSLoteStatus, TISSGuia, TISSGuiaStatus, TISSGlosa,
+    TISSElegibilidadeConsulta, TISSElegibilidadeOrigem,
+)
 from .xml_builder import build_lote_xml, XMLBuilderError
 from .xml_validator import validate_xml, XMLValidatorError
-from .soap_client import enviar_lote as soap_enviar_lote, SOAPClientError, SOAPSuccessResult, SOAPFaultResult
+from .soap_client import (
+    enviar_lote as soap_enviar_lote,
+    verificar_elegibilidade as soap_verificar_elegibilidade,
+    SOAPClientError, SOAPSuccessResult, SOAPFaultResult, ElegibilidadeResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,3 +141,124 @@ def enviar_lote(lote: TISSLote, guia_ids: list = None, mock_scenario: str = 'suc
         raise TISSServiceError('soap_fault', f'{resultado.codigo_erro}: {resultado.descricao_erro}')
 
     raise TISSServiceError('resultado_soap_desconhecido')
+
+
+def _build_pedido_elegibilidade_xml(clinic, numero_carteira: str) -> str:
+    """
+    Monta o fragmento pedidoElegibilidade (ct_elegibilidadeVerifica) mínimo:
+    dadosPrestador (choice — usamos cnpjContratado, sempre disponível via
+    Clinic.cnpj) + numeroCarteira (únicos campos obrigatórios no XSD; os
+    demais são todos minOccurs="0").
+
+    BACFF-013: mesma ressalva já registrada para o request de envio de lote
+    — o "wrapping" exato da operação (se o corpo do SOAP deveria embrulhar
+    isto dentro de pedidoElegibilidadeWS/cabecalho, e não só o fragmento
+    cru) ainda não foi confirmado contra uma operadora real, só contra o
+    padrão ANS publicado. Mantém o mesmo padrão já usado por enviar_lote
+    (fragmento de negócio direto, sem o wrapper de mensagem) por
+    consistência — ver nota em tiss_soap_plan.md sobre essa limitação.
+    """
+    cnpj_limpo = (clinic.cnpj or '').replace('.', '').replace('/', '').replace('-', '').strip()
+    return (
+        '<pedidoElegibilidade>'
+        '<dadosPrestador>'
+        f'<cnpjContratado>{escape(cnpj_limpo)}</cnpjContratado>'
+        '</dadosPrestador>'
+        f'<numeroCarteira>{escape(numero_carteira)}</numeroCarteira>'
+        '</pedidoElegibilidade>'
+    )
+
+
+def consultar_elegibilidade_automatica(
+    clinic, operator_config, numero_carteira: str,
+    beneficiario_nome: str = '', appointment_id: str = '',
+    mock_scenario: str = 'success',
+) -> TISSElegibilidadeConsulta:
+    """
+    Consulta síncrona de elegibilidade via SOAP (tissVerificaElegibilidade_
+    Operation) — diferente de enviar_lote, não há estado intermediário
+    (BACFF-013: confirmado que elegibilidade não tem operação de polling/
+    status na spec ANS, ao contrário de lote). Persiste SEMPRE uma linha
+    nova (auditoria, nunca atualiza registro existente) com o resultado,
+    seja sucesso, negativa, ou falha de transporte.
+    """
+    xml_pedido = _build_pedido_elegibilidade_xml(clinic, numero_carteira)
+
+    try:
+        resultado = soap_verificar_elegibilidade(
+            endpoint_url=operator_config.endpoint_url,
+            xml_mensagem_tiss=xml_pedido,
+            mock_scenario=mock_scenario,
+        )
+    except SOAPClientError as exc:
+        return TISSElegibilidadeConsulta.objects.create(
+            clinic=clinic,
+            operator_config=operator_config,
+            appointment_id=appointment_id,
+            numero_carteira=numero_carteira,
+            beneficiario_nome=beneficiario_nome,
+            origem=TISSElegibilidadeOrigem.AUTOMATICA,
+            elegivel=False,
+            xml_enviado=xml_pedido,
+            erro_mensagem=f'falha_soap: {exc}',
+        )
+
+    if isinstance(resultado, ElegibilidadeResult):
+        return TISSElegibilidadeConsulta.objects.create(
+            clinic=clinic,
+            operator_config=operator_config,
+            appointment_id=appointment_id,
+            numero_carteira=numero_carteira,
+            beneficiario_nome=beneficiario_nome or resultado.nome_beneficiario,
+            origem=TISSElegibilidadeOrigem.AUTOMATICA,
+            elegivel=resultado.elegivel,
+            motivos_negativa=[
+                {'codigo': codigo, 'descricao': descricao}
+                for codigo, descricao in resultado.motivos_negativa
+            ],
+            xml_enviado=xml_pedido,
+            xml_recebido=resultado.raw_response,
+        )
+
+    # SOAPFaultResult — operadora rejeitou a PRÓPRIA consulta (ex.: prestador
+    # não autorizado), não uma resposta sobre o beneficiário.
+    return TISSElegibilidadeConsulta.objects.create(
+        clinic=clinic,
+        operator_config=operator_config,
+        appointment_id=appointment_id,
+        numero_carteira=numero_carteira,
+        beneficiario_nome=beneficiario_nome,
+        origem=TISSElegibilidadeOrigem.AUTOMATICA,
+        elegivel=False,
+        xml_enviado=xml_pedido,
+        xml_recebido=resultado.raw_response,
+        erro_mensagem=f'{resultado.codigo_erro}: {resultado.descricao_erro}',
+    )
+
+
+def registrar_elegibilidade_manual(
+    clinic, operator_config, numero_carteira: str, numero_guia_operadora: str,
+    elegivel: bool, beneficiario_nome: str = '', appointment_id: str = '',
+) -> TISSElegibilidadeConsulta:
+    """
+    BACFF-013: fallback de primeira classe, não uma exceção informal — a
+    recepcionista ligou/acessou o portal da operadora diretamente e digitou
+    o número da guia gerada manualmente. numero_guia_operadora é obrigatório
+    aqui (TISSElegibilidadeConsulta.clean() valida isso também).
+    """
+    if not numero_guia_operadora:
+        raise TISSServiceError('numero_guia_operadora_obrigatorio', 'Registro manual exige o número da guia da operadora')
+
+    consulta = TISSElegibilidadeConsulta(
+        clinic=clinic,
+        operator_config=operator_config,
+        appointment_id=appointment_id,
+        numero_carteira=numero_carteira,
+        beneficiario_nome=beneficiario_nome,
+        origem=TISSElegibilidadeOrigem.MANUAL,
+        elegivel=elegivel,
+        numero_guia_operadora=numero_guia_operadora,
+    )
+    consulta.full_clean()
+    consulta.save()
+    return consulta

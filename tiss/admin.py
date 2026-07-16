@@ -3,7 +3,7 @@ from django.http import HttpResponse
 from django.utils.html import format_html
 
 from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
-from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa
+from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta
 from .services import enviar_lote, TISSServiceError
 
 
@@ -85,3 +85,19 @@ class TISSGlosaAdmin(TenantScopedAdminMixin, BaseAdmin):
     list_filter = ('codigo', 'recurso_enviado')
     search_fields = ('codigo', 'guia__numero')
     readonly_fields = ('id', 'created_at')
+
+
+@admin.register(TISSElegibilidadeConsulta)
+class TISSElegibilidadeConsultaAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # Somente leitura — cada linha é um registro de auditoria imutável
+    # (BACFF-013), não deve ser editado depois de criado pelo fluxo real.
+    list_display = ('numero_carteira', 'clinic', 'origem', 'elegivel', 'created_at')
+    list_filter = ('origem', 'elegivel', 'clinic')
+    search_fields = ('numero_carteira', 'beneficiario_nome', 'numero_guia_operadora', 'clinic__name')
+    readonly_fields = [f.name for f in TISSElegibilidadeConsulta._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
