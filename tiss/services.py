@@ -4,13 +4,14 @@ envia SOAP (real ou mock) e persiste o resultado. Usado pela ViewSet
 action `enviar` (tiss/views.py).
 """
 import logging
+from dataclasses import dataclass, field
 from xml.sax.saxutils import escape
 
 from django.db import transaction
 
 from .models import (
     TISSLote, TISSLoteStatus, TISSGuia, TISSGuiaStatus, TISSGlosa,
-    TISSElegibilidadeConsulta, TISSElegibilidadeOrigem,
+    TISSElegibilidadeConsulta, TISSElegibilidadeOrigem, TISSElegibilidadeStatus,
 )
 from .xml_builder import build_lote_xml, XMLBuilderError
 from .xml_validator import validate_xml, XMLValidatorError
@@ -169,18 +170,59 @@ def _build_pedido_elegibilidade_xml(clinic, numero_carteira: str) -> str:
     )
 
 
+@dataclass
+class ElegibilidadeRespostaCompleta:
+    """
+    BACFF-AVULSA-01: o resultado COMPLETO (conteúdo clínico) da consulta —
+    devolvido na resposta HTTP síncrona ao Edge Gateway, mas nunca
+    persistido no banco central. Quem chama (views.py) serializa isto
+    diretamente, sem passar pelo model/DB. A cópia duradoura fica no banco
+    LOCAL da clínica (Edge Gateway), responsabilidade de quem consome esta
+    resposta — não deste serviço.
+    """
+    elegivel: bool
+    numero_carteira: str
+    beneficiario_nome: str
+    origem: str
+    motivos_negativa: list = field(default_factory=list)
+    numero_guia_operadora: str = ''
+    erro_mensagem: str = ''
+
+
+def _log_elegibilidade(clinic, operator_config, appointment_id, origem, status, erro_mensagem=''):
+    """
+    Persiste SÓ o log operacional (BACFF-AVULSA-01) — sem numero_carteira,
+    beneficiario_nome, elegivel, motivos_negativa nem XML. `erro_mensagem`
+    aqui é sempre técnica (código/descrição de falha de transporte ou fault
+    da operadora), nunca conteúdo do beneficiário — quem monta essa string
+    nas funções abaixo é responsável por essa garantia.
+    """
+    return TISSElegibilidadeConsulta.objects.create(
+        clinic=clinic,
+        operator_config=operator_config,
+        appointment_id=appointment_id,
+        origem=origem,
+        status=status,
+        erro_mensagem=erro_mensagem,
+    )
+
+
 def consultar_elegibilidade_automatica(
     clinic, operator_config, numero_carteira: str,
     beneficiario_nome: str = '', appointment_id: str = '',
     mock_scenario: str = 'success',
-) -> TISSElegibilidadeConsulta:
+) -> ElegibilidadeRespostaCompleta:
     """
     Consulta síncrona de elegibilidade via SOAP (tissVerificaElegibilidade_
     Operation) — diferente de enviar_lote, não há estado intermediário
     (BACFF-013: confirmado que elegibilidade não tem operação de polling/
-    status na spec ANS, ao contrário de lote). Persiste SEMPRE uma linha
-    nova (auditoria, nunca atualiza registro existente) com o resultado,
-    seja sucesso, negativa, ou falha de transporte.
+    status na spec ANS, ao contrário de lote).
+
+    BACFF-AVULSA-01: só persiste um log OPERACIONAL (sucesso/falha) no banco
+    central — o conteúdo clínico completo (elegível, motivos, nome do
+    beneficiário) só existe na resposta devolvida daqui, nunca no banco
+    central. Quem precisa do histórico completo persiste localmente (Edge
+    Gateway).
     """
     xml_pedido = _build_pedido_elegibilidade_xml(clinic, numero_carteira)
 
@@ -191,74 +233,56 @@ def consultar_elegibilidade_automatica(
             mock_scenario=mock_scenario,
         )
     except SOAPClientError as exc:
-        return TISSElegibilidadeConsulta.objects.create(
-            clinic=clinic,
-            operator_config=operator_config,
-            appointment_id=appointment_id,
-            numero_carteira=numero_carteira,
-            beneficiario_nome=beneficiario_nome,
-            origem=TISSElegibilidadeOrigem.AUTOMATICA,
-            elegivel=False,
-            xml_enviado=xml_pedido,
-            erro_mensagem=f'falha_soap: {exc}',
+        erro = f'falha_soap: {exc}'
+        _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA, TISSElegibilidadeStatus.FALHA_TRANSPORTE, erro)
+        return ElegibilidadeRespostaCompleta(
+            elegivel=False, numero_carteira=numero_carteira, beneficiario_nome=beneficiario_nome,
+            origem=TISSElegibilidadeOrigem.AUTOMATICA, erro_mensagem=erro,
         )
 
     if isinstance(resultado, ElegibilidadeResult):
-        return TISSElegibilidadeConsulta.objects.create(
-            clinic=clinic,
-            operator_config=operator_config,
-            appointment_id=appointment_id,
+        _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA, TISSElegibilidadeStatus.SUCESSO)
+        return ElegibilidadeRespostaCompleta(
+            elegivel=resultado.elegivel,
             numero_carteira=numero_carteira,
             beneficiario_nome=beneficiario_nome or resultado.nome_beneficiario,
             origem=TISSElegibilidadeOrigem.AUTOMATICA,
-            elegivel=resultado.elegivel,
             motivos_negativa=[
                 {'codigo': codigo, 'descricao': descricao}
                 for codigo, descricao in resultado.motivos_negativa
             ],
-            xml_enviado=xml_pedido,
-            xml_recebido=resultado.raw_response,
         )
 
     # SOAPFaultResult — operadora rejeitou a PRÓPRIA consulta (ex.: prestador
     # não autorizado), não uma resposta sobre o beneficiário.
-    return TISSElegibilidadeConsulta.objects.create(
-        clinic=clinic,
-        operator_config=operator_config,
-        appointment_id=appointment_id,
-        numero_carteira=numero_carteira,
-        beneficiario_nome=beneficiario_nome,
-        origem=TISSElegibilidadeOrigem.AUTOMATICA,
-        elegivel=False,
-        xml_enviado=xml_pedido,
-        xml_recebido=resultado.raw_response,
-        erro_mensagem=f'{resultado.codigo_erro}: {resultado.descricao_erro}',
+    erro = f'{resultado.codigo_erro}: {resultado.descricao_erro}'
+    _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA, TISSElegibilidadeStatus.FALHA_OPERADORA, erro)
+    return ElegibilidadeRespostaCompleta(
+        elegivel=False, numero_carteira=numero_carteira, beneficiario_nome=beneficiario_nome,
+        origem=TISSElegibilidadeOrigem.AUTOMATICA, erro_mensagem=erro,
     )
 
 
 def registrar_elegibilidade_manual(
     clinic, operator_config, numero_carteira: str, numero_guia_operadora: str,
     elegivel: bool, beneficiario_nome: str = '', appointment_id: str = '',
-) -> TISSElegibilidadeConsulta:
+) -> ElegibilidadeRespostaCompleta:
     """
     BACFF-013: fallback de primeira classe, não uma exceção informal — a
     recepcionista ligou/acessou o portal da operadora diretamente e digitou
-    o número da guia gerada manualmente. numero_guia_operadora é obrigatório
-    aqui (TISSElegibilidadeConsulta.clean() valida isso também).
+    o número da guia gerada manualmente. numero_guia_operadora é obrigatório.
+
+    BACFF-AVULSA-01: mesmo tratamento de consultar_elegibilidade_automatica
+    — log operacional central, conteúdo completo só na resposta.
     """
     if not numero_guia_operadora:
         raise TISSServiceError('numero_guia_operadora_obrigatorio', 'Registro manual exige o número da guia da operadora')
 
-    consulta = TISSElegibilidadeConsulta(
-        clinic=clinic,
-        operator_config=operator_config,
-        appointment_id=appointment_id,
+    _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.MANUAL, TISSElegibilidadeStatus.SUCESSO)
+    return ElegibilidadeRespostaCompleta(
+        elegivel=elegivel,
         numero_carteira=numero_carteira,
         beneficiario_nome=beneficiario_nome,
         origem=TISSElegibilidadeOrigem.MANUAL,
-        elegivel=elegivel,
         numero_guia_operadora=numero_guia_operadora,
     )
-    consulta.full_clean()
-    consulta.save()
-    return consulta

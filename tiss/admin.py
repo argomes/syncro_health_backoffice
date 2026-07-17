@@ -92,11 +92,12 @@ class TISSGlosaAdmin(TenantScopedAdminMixin, BaseAdmin):
 
 @admin.register(TISSElegibilidadeConsulta)
 class TISSElegibilidadeConsultaAdmin(TenantScopedAdminMixin, BaseAdmin):
-    # Somente leitura — cada linha é um registro de auditoria imutável
-    # (BACFF-013), não deve ser editado depois de criado pelo fluxo real.
-    list_display = ('numero_carteira', 'clinic', 'origem', 'elegivel', 'created_at')
-    list_filter = ('origem', 'elegivel', 'clinic')
-    search_fields = ('numero_carteira', 'beneficiario_nome', 'numero_guia_operadora', 'clinic__name')
+    # BACFF-AVULSA-01: só log operacional (sem PII de beneficiário) — o
+    # admin do sistema vê se a integração funcionou ou falhou, não quem é o
+    # paciente nem se ele é elegível. Somente leitura — imutável após criado.
+    list_display = ('clinic', 'origem', 'status', 'created_at')
+    list_filter = ('origem', 'status', 'clinic')
+    search_fields = ('clinic__name', 'appointment_id')
     readonly_fields = [f.name for f in TISSElegibilidadeConsulta._meta.fields]
 
     def has_add_permission(self, request):

@@ -208,14 +208,26 @@ class TISSElegibilidadeOrigem(models.TextChoices):
     MANUAL = 'manual', 'Manual (recepção)'
 
 
+class TISSElegibilidadeStatus(models.TextChoices):
+    SUCESSO = 'sucesso', 'Sucesso (resposta recebida da operadora)'
+    FALHA_TRANSPORTE = 'falha_transporte', 'Falha de transporte (SOAP)'
+    FALHA_OPERADORA = 'falha_operadora', 'Operadora rejeitou a própria consulta'
+
+
 class TISSElegibilidadeConsulta(models.Model):
     """
-    Registro de AUDITORIA de uma consulta de elegibilidade — não é cache do
-    "último status conhecido", é prova de que NAQUELE DIA/HORÁRIO
-    específico o beneficiário estava (ou não) elegível, decisão de produto
-    confirmada com o usuário (BACFF-013). Nunca atualizar um registro
-    existente para refletir uma nova consulta — cada consulta é uma linha
-    nova, imutável após criada.
+    LOG OPERACIONAL de uma consulta de elegibilidade — NÃO é mais um
+    registro de auditoria com o conteúdo clínico completo (BACFF-AVULSA-01,
+    achado de Security Engineer em 2026-07-16: o conteúdo antigo —
+    numero_carteira, beneficiario_nome, elegivel, motivos_negativa, XML —
+    ficava no banco CENTRAL multi-tenant, visível a qualquer suporte com
+    acesso à clínica. O admin do sistema não tem motivo de negócio para
+    saber SE UM PACIENTE ESPECÍFICO é elegível; só precisa saber se a
+    integração com a operadora funcionou, para agir rápido em caso de
+    falha). O resultado completo (elegível, motivos, nome do beneficiário)
+    continua sendo devolvido na resposta HTTP síncrona ao Edge Gateway —
+    só deixa de ser PERSISTIDO aqui. A cópia completa e duradoura passa a
+    viver no banco LOCAL da clínica (SQLite do gateway), nunca neste banco.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     clinic = models.ForeignKey(Clinic, on_delete=models.PROTECT, related_name='tiss_elegibilidade_consultas')
@@ -224,47 +236,29 @@ class TISSElegibilidadeConsulta(models.Model):
     )
     appointment_id = models.CharField(
         max_length=64, blank=True,
-        help_text='ID do agendamento no Edge Gateway (não é FK, mesmo padrão de TISSGuia.appointment_id)',
+        help_text='ID do agendamento no Edge Gateway (não é FK, mesmo padrão de TISSGuia.appointment_id) — referência opaca, não é PII por si só',
     )
 
-    # Dados mínimos do beneficiário — mesmo padrão/justificativa de
-    # TISSGuia.numero_carteira/beneficiario_nome (dado de negócio necessário
-    # à auditoria, nunca aparece em log).
-    numero_carteira = models.CharField(max_length=20)
-    beneficiario_nome = models.CharField(max_length=70, blank=True)
-
     origem = models.CharField(max_length=10, choices=TISSElegibilidadeOrigem, default=TISSElegibilidadeOrigem.AUTOMATICA)
-    elegivel = models.BooleanField()
-    motivos_negativa = models.JSONField(default=list, blank=True, help_text='Lista de {codigo, descricao} quando elegivel=False')
-
-    # Obrigatório apenas quando origem=MANUAL (recepcionista confirmou por
-    # telefone/portal da operadora e digitou o número gerado) — ver clean().
-    numero_guia_operadora = models.CharField(max_length=20, blank=True)
-
-    # Auditoria da chamada SOAP real (quando origem=AUTOMATICA) — nunca
-    # incluído em log, só persistido aqui.
-    xml_enviado = models.TextField(blank=True)
-    xml_recebido = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=TISSElegibilidadeStatus)
+    # Mensagem TÉCNICA (ex.: "falha_soap: timeout", "SchemaInvalido") — nunca
+    # deve conter nome/carteirinha do beneficiário. Quem monta essa mensagem
+    # em services.py é responsável por essa garantia.
     erro_mensagem = models.TextField(blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        verbose_name = 'Consulta de Elegibilidade TISS'
-        verbose_name_plural = 'Consultas de Elegibilidade TISS'
+        verbose_name = 'Log de Consulta de Elegibilidade TISS'
+        verbose_name_plural = 'Logs de Consulta de Elegibilidade TISS'
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['clinic', 'numero_carteira']),
             models.Index(fields=['clinic', 'created_at']),
-            models.Index(fields=['clinic', 'appointment_id']),
+            models.Index(fields=['clinic', 'status']),
         ]
 
     def __str__(self):
-        return f'Elegibilidade {self.numero_carteira} — {self.clinic.name} ({self.origem}, elegivel={self.elegivel})'
-
-    def clean(self):
-        if self.origem == TISSElegibilidadeOrigem.MANUAL and not self.numero_guia_operadora:
-            raise ValidationError('numero_guia_operadora é obrigatório quando origem=manual')
+        return f'Elegibilidade — {self.clinic.name} ({self.origem}, {self.status})'
 
 
 class TUSSProcedureCode(models.Model):

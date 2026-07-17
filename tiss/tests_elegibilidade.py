@@ -4,7 +4,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from clinics.models import Clinic, ClinicStatus, Plan, ProvisioningStatus
-from .models import TISSOperatorConfig, TISSElegibilidadeConsulta, TISSElegibilidadeOrigem
+from .models import TISSOperatorConfig, TISSElegibilidadeConsulta, TISSElegibilidadeOrigem, TISSElegibilidadeStatus
 from .services import (
     consultar_elegibilidade_automatica, registrar_elegibilidade_manual, TISSServiceError,
 )
@@ -67,17 +67,37 @@ class ConsultarElegibilidadeAutomaticaServiceTests(TestCase):
         self.assertFalse(consulta.elegivel)
         self.assertTrue(consulta.erro_mensagem)
 
-    def test_duas_consultas_para_mesma_carteira_geram_duas_linhas(self):
-        """Auditoria, não cache — nunca sobrescreve a consulta anterior."""
+    def test_log_operacional_central_nao_guarda_pii_do_beneficiario(self):
+        """
+        BACFF-AVULSA-01: o log persistido no banco central não deve conter
+        numero_carteira nem beneficiario_nome em NENHUM campo — nem mesmo
+        dentro de erro_mensagem (que deve ser só texto técnico).
+        """
+        consultar_elegibilidade_automatica(
+            clinic=self.clinic, operator_config=self.op, numero_carteira='CARTEIRA-SECRETA',
+            beneficiario_nome='Paciente Confidencial', mock_scenario='negativa',
+        )
+        log = TISSElegibilidadeConsulta.objects.get(clinic=self.clinic)
+        self.assertFalse(hasattr(log, 'numero_carteira'))
+        self.assertFalse(hasattr(log, 'beneficiario_nome'))
+        self.assertNotIn('CARTEIRA-SECRETA', log.erro_mensagem)
+        self.assertNotIn('Paciente Confidencial', log.erro_mensagem)
+        self.assertEqual(log.status, TISSElegibilidadeStatus.SUCESSO)
+
+    def test_duas_consultas_geram_dois_logs_operacionais(self):
+        """
+        BACFF-AVULSA-01: o log central não guarda mais numero_carteira (é
+        conteúdo clínico, não deve persistir aqui) — a garantia de "nunca
+        sobrescreve, sempre gera linha nova" agora se verifica pela
+        contagem de logs da clínica, não por filtro de carteirinha.
+        """
         consultar_elegibilidade_automatica(
             clinic=self.clinic, operator_config=self.op, numero_carteira='CARTEIRA-4', mock_scenario='success',
         )
         consultar_elegibilidade_automatica(
             clinic=self.clinic, operator_config=self.op, numero_carteira='CARTEIRA-4', mock_scenario='negativa',
         )
-        self.assertEqual(
-            TISSElegibilidadeConsulta.objects.filter(numero_carteira='CARTEIRA-4').count(), 2,
-        )
+        self.assertEqual(TISSElegibilidadeConsulta.objects.filter(clinic=self.clinic).count(), 2)
 
 
 class RegistrarElegibilidadeManualServiceTests(TestCase):
@@ -107,7 +127,7 @@ class RegistrarElegibilidadeManualServiceTests(TestCase):
                 clinic=self.clinic, operator_config=self.op, numero_carteira='CARTEIRA-6',
                 numero_guia_operadora='', elegivel=True,
             )
-        self.assertEqual(TISSElegibilidadeConsulta.objects.filter(numero_carteira='CARTEIRA-6').count(), 0)
+        self.assertEqual(TISSElegibilidadeConsulta.objects.filter(clinic=self.clinic).count(), 0)
 
 
 @override_settings(TISS_SOAP_MOCK=True)

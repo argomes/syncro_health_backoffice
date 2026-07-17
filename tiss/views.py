@@ -14,6 +14,7 @@ from .models import (
 from .serializers import (
     TISSOperatorConfigSerializer, TISSLoteSerializer, TISSGuiaSerializer, TISSGlosaSerializer,
     TISSElegibilidadeConsultaSerializer, TUSSProcedureCodeSerializer, ANSInsuranceOperatorSerializer,
+    ElegibilidadeRespostaCompletaSerializer,
 )
 from .permissions import IsTISSAuthorized
 from .services import (
@@ -213,7 +214,7 @@ def verificar_elegibilidade(request):
     except TISSOperatorConfig.DoesNotExist:
         return Response({'error': 'operadora_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    consulta = consultar_elegibilidade_automatica(
+    resultado = consultar_elegibilidade_automatica(
         clinic=clinic,
         operator_config=operator_config,
         numero_carteira=numero_carteira,
@@ -221,7 +222,7 @@ def verificar_elegibilidade(request):
         appointment_id=data.get('appointment_id', ''),
         mock_scenario=data.get('mock_scenario', 'success'),
     )
-    return Response(TISSElegibilidadeConsultaSerializer(consulta).data, status=status.HTTP_201_CREATED)
+    return Response(ElegibilidadeRespostaCompletaSerializer(resultado).data, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])
@@ -319,7 +320,7 @@ def registrar_elegibilidade_manual_view(request):
         return Response({'error': 'operadora_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
     try:
-        consulta = registrar_elegibilidade_manual(
+        resultado = registrar_elegibilidade_manual(
             clinic=clinic,
             operator_config=operator_config,
             numero_carteira=numero_carteira,
@@ -331,4 +332,4 @@ def registrar_elegibilidade_manual_view(request):
     except TISSServiceError as exc:
         return Response({'error': exc.code, 'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-    return Response(TISSElegibilidadeConsultaSerializer(consulta).data, status=status.HTTP_201_CREATED)
+    return Response(ElegibilidadeRespostaCompletaSerializer(resultado).data, status=status.HTTP_201_CREATED)

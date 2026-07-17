@@ -83,17 +83,27 @@ class TISSLoteSerializer(serializers.ModelSerializer):
 
 
 class TISSElegibilidadeConsultaSerializer(serializers.ModelSerializer):
+    """Serializa o LOG operacional (BACFF-AVULSA-01) — sem conteúdo clínico."""
     class Meta:
         model = TISSElegibilidadeConsulta
-        fields = [
-            'id', 'clinic', 'operator_config', 'appointment_id',
-            'numero_carteira', 'beneficiario_nome', 'origem', 'elegivel',
-            'motivos_negativa', 'numero_guia_operadora', 'erro_mensagem',
-            'created_at',
-        ]
-        read_only_fields = [
-            'id', 'elegivel', 'motivos_negativa', 'erro_mensagem', 'created_at',
-        ]
+        fields = ['id', 'clinic', 'operator_config', 'appointment_id', 'origem', 'status', 'erro_mensagem', 'created_at']
+        read_only_fields = fields
+
+
+class ElegibilidadeRespostaCompletaSerializer(serializers.Serializer):
+    """
+    Serializa services.ElegibilidadeRespostaCompleta — o conteúdo clínico
+    completo devolvido na resposta HTTP síncrona, que NUNCA é persistido no
+    banco central (BACFF-AVULSA-01). Plain Serializer (não ModelSerializer):
+    não há model por trás, de propósito.
+    """
+    elegivel = serializers.BooleanField()
+    numero_carteira = serializers.CharField()
+    beneficiario_nome = serializers.CharField(allow_blank=True)
+    origem = serializers.CharField()
+    motivos_negativa = serializers.ListField(default=list)
+    numero_guia_operadora = serializers.CharField(allow_blank=True, required=False)
+    erro_mensagem = serializers.CharField(allow_blank=True, required=False)
 
 
 class TUSSProcedureCodeSerializer(serializers.ModelSerializer):
