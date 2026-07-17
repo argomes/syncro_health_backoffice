@@ -1,11 +1,13 @@
 from django.utils import timezone
+from django.core.cache import cache
+from datetime import timedelta
 import logging
 
 from rest_framework import viewsets, filters, status
 from rest_framework.decorators import action, api_view, permission_classes, authentication_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from syncro_backoffice.throttling import ServiceTokenRateThrottle, LicenseRateThrottle
+from syncro_backoffice.throttling import ServiceTokenRateThrottle, LicenseRateThrottle, DbAccessGrantRateThrottle
 
 from .models import Clinic, ClinicStatus, ProvisioningStatus
 from .serializers import ClinicSerializer
@@ -14,6 +16,9 @@ from .service_tokens import generate_service_token
 from .authentication import ServiceTokenAuthentication
 
 logger = logging.getLogger(__name__)
+
+DB_ACCESS_GRANT_DEFAULT_TTL_SECONDS = 14400  # 4h
+DB_ACCESS_GRANT_MAX_TTL_SECONDS = 14400  # 4h
 
 
 class ClinicViewSet(viewsets.ModelViewSet):
@@ -77,6 +82,58 @@ class ClinicViewSet(viewsets.ModelViewSet):
             'db_user': clinic.db_user,
             'db_password_encrypted': clinic.db_password_encrypted,
         })
+
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='db-access-grant',
+        permission_classes=[IsAuthenticatedByLicenseKey],
+        throttle_classes=[DbAccessGrantRateThrottle],
+    )
+    def db_access_grant(self, request):
+        """
+        Recebe do gateway local uma senha temporária (em texto plano, já
+        decriptada pela chave privada RSA da clínica) autorizando o
+        Backoffice a conectar ao banco da clínica como o db_user escopado
+        (não superuser), por um período limitado (BACFF-AVULSA-06).
+
+        A credencial vive só em cache (Redis), nunca em modelo relacional —
+        expira sozinha via TTL nativo do cache, sem job de limpeza.
+        """
+        clinic: Clinic = request.clinic
+
+        if clinic.provisioning_status != ProvisioningStatus.PROVISIONED:
+            return Response(
+                {'error': 'not_provisioned', 'status': clinic.provisioning_status},
+                status=status.HTTP_424_FAILED_DEPENDENCY,
+            )
+
+        db_password = str(request.data.get('db_password', '')).strip()
+        if not db_password:
+            return Response({'error': 'db_password_required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        ttl_seconds = request.data.get('ttl_seconds', DB_ACCESS_GRANT_DEFAULT_TTL_SECONDS)
+        if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds <= 0 \
+                or ttl_seconds > DB_ACCESS_GRANT_MAX_TTL_SECONDS:
+            return Response({'error': 'ttl_seconds_invalid'}, status=status.HTTP_400_BAD_REQUEST)
+
+        granted_by = str(request.data.get('granted_by', '')).strip()
+        now = timezone.now()
+        expires_at = now + timedelta(seconds=ttl_seconds)
+
+        cache.set(f"clinic_db_grant:{clinic.id}", {
+            'password': db_password,
+            'granted_by': granted_by,
+            'granted_at': now.isoformat(),
+            'expires_at': expires_at.isoformat(),
+        }, timeout=ttl_seconds)
+
+        logger.info(
+            "db_access_grant concedido clinic_id=%s granted_by=%s ttl=%s",
+            clinic.id, granted_by, ttl_seconds,
+        )  # nunca logar a senha
+
+        return Response({'granted': True, 'expires_at': expires_at.isoformat()})
 
     @action(
         detail=False,

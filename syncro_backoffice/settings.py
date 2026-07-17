@@ -105,6 +105,14 @@ DATABASES = {
 # URL do superuser PostgreSQL — usada APENAS pelo provisioning.py para criar databases
 PROVISIONING_DATABASE_URL = env('PROVISIONING_DATABASE_URL', default='')
 
+# Host:porta do cluster Postgres (sem credencial embutida) — usado por
+# portal_gestor/clinic_db.py para conectar como o db_user escopado da clínica,
+# autenticado com a senha do grant temporário (BACFF-AVULSA-06). Nunca contém
+# a credencial de superuser — essa vive só em PROVISIONING_DATABASE_URL, usada
+# exclusivamente em clinics/provisioning.py.
+PROVISIONING_HOST = env('PROVISIONING_HOST', default='localhost')
+PROVISIONING_PORT = env.int('PROVISIONING_PORT', default=5432)
+
 # Nome de um banco Postgres marcado como TEMPLATE (datistemplate=true), com o schema do
 # gateway (patients/appointments/dual envelope) já aplicado — se configurado, cada banco
 # de clínica nasce com o schema pronto via CREATE DATABASE ... TEMPLATE, em vez de vazio
@@ -151,6 +159,12 @@ REST_FRAMEWORK = {
         'service_token': '30/minute',
         'webhook': '120/minute',
         'license': '60/minute',
+        # BACFF-AVULSA-06 (correção 2026-07-17): db-access-grant grava uma
+        # senha de banco Postgres válida em cache. É uma ação administrativa
+        # deliberada e rara (não uso frequente), então a rate é
+        # deliberadamente baixa — recomendação do Security Engineer:
+        # 5-10/hora por IP.
+        'db_access_grant': '8/hour',
     },
 }
 
