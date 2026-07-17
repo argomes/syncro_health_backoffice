@@ -1,7 +1,7 @@
 from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 from django.contrib import admin
 
-from .models import ClinicUserNoticeDismissal, ProductNotice, ReportSession
+from .models import ClinicUserNoticeDismissal, PortalReadAuditLog, ProductNotice, ReportSession
 
 
 @admin.register(ReportSession)
@@ -29,6 +29,30 @@ class ReportSessionAdmin(TenantScopedAdminMixin, BaseAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(PortalReadAuditLog)
+class PortalReadAuditLogAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    Somente leitura — trilha de auditoria (LGPD Art. 37) não pode ser editada
+    nem apagada pelo suporte via /admin/, só consultada. Isolada por clínica
+    (`TenantScopedAdminMixin`) — um não-ADMIN não deve ver leituras de
+    clientes de outras clínicas.
+    """
+    clinic_lookup = 'clinic'
+    list_display = ('clinic', 'clinic_user', 'entity', 'record_count', 'session_id', 'created_at')
+    list_filter = ('entity', 'clinic')
+    search_fields = ('clinic__name', 'clinic_user__email', 'session_id')
+    readonly_fields = ('clinic_user', 'clinic', 'session_id', 'entity', 'record_count', 'created_at')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False
 
 

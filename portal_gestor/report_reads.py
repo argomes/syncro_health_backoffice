@@ -99,6 +99,14 @@ _APPOINTMENT_QUERY = """
 """
 
 
+_PROFESSIONAL_QUERY = """
+    SELECT id, name, role, registry_type, registry, status, metadata, cbo_code, updated_at
+    FROM professionals
+    WHERE updated_at BETWEEN %s AND %s
+      AND deleted_at IS NULL
+"""
+
+
 def _run_query(clinic, query, params):
     try:
         with clinic_db_connection(clinic) as conn:
@@ -161,6 +169,48 @@ def read_appointments_report(clinic, session) -> list[dict]:
             'notes': notes,
             'clinical_notes': _decrypt_optional_str(clinical_notes_enc, dek),
             'metadata': _decrypt_optional_json(metadata_enc, dek),
+            'updated_at': updated_at.isoformat() if updated_at else None,
+        })
+    return results
+
+
+def read_professionals_report(clinic, session) -> list[dict]:
+    """
+    Diferente de `read_patients_report`/`read_appointments_report`: a tabela
+    `professionals` no Postgres da clínica NÃO usa o envelope de criptografia
+    por sessão (sem `*_enc`, sem `dek_encrypted_session`, sem `session_key_id`
+    — confirmado lendo o schema real sincronizado por `ProfessionalSyncStrategy`
+    em syncro_gateway/internal/adapters/output/cloud/professional_strategy.go e
+    a migration 001_initial_schema.sql do gateway). `name` e `registry` (o
+    número de conselho profissional, ex. CRM/CRO) chegam em texto plano no
+    banco da clínica hoje.
+    # [SECURITY]: gap real, fora do escopo desta rodada (ver BACFF-AVULSA-05)
+    # — o ideal seria `professionals` seguir o mesmo dual-envelope de
+    # `patients`/`appointments`. Registrado como pendência de produto, não
+    # implementado aqui para não expandir escopo sem pedido explícito.
+    #
+    # Ainda assim, mantemos o MESMO gate de autorização das outras entidades
+    # (escopo da sessão + TemporaryKey vigente no cache) — a leitura só é
+    # permitida dentro da janela de uma ReportSession autorizada e não
+    # expirada, mesmo que não haja DEK para decriptar aqui.
+    """
+    _require_entity_in_scope(session, 'professionals')
+    _get_temp_key_or_403(session)  # só o gate de autorização — sem uso de DEK abaixo.
+
+    rows = _run_query(clinic, _PROFESSIONAL_QUERY, (session.date_from, session.date_to))
+
+    results = []
+    for (prof_id, name, role, registry_type, registry, prof_status, metadata,
+         cbo_code, updated_at) in rows:
+        results.append({
+            'id': str(prof_id),
+            'name': name,
+            'role': role,
+            'registry_type': registry_type,
+            'registry': registry,
+            'status': prof_status,
+            'metadata': metadata,
+            'cbo_code': cbo_code,
             'updated_at': updated_at.isoformat() if updated_at else None,
         })
     return results

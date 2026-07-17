@@ -8,7 +8,7 @@ from clinics.permissions import IsClinicUser
 
 from . import notices, report_reads, services
 from .dashboard import get_dashboard_summary
-from .models import ReportSession
+from .models import PortalReadAuditLog, ReportSession
 from .serializers import ReportSessionCreateSerializer, ReportSessionSerializer
 
 
@@ -76,6 +76,9 @@ class _ReportReadView(APIView):
     read_fn_name = None  # definido nas subclasses — lookup dinâmico via getattr,
     # não uma referência direta à função (que "congelaria" a versão original do
     # módulo em tempo de import e ignoraria patches em testes).
+    entity_name = None  # definido nas subclasses — usado só para o registro de
+    # auditoria (BACFF-AVULSA-05), nunca para autorização (isso é feito por
+    # report_reads via _require_entity_in_scope).
 
     def get(self, request, session_id):
         try:
@@ -85,17 +88,49 @@ class _ReportReadView(APIView):
 
         read_fn = getattr(report_reads, self.read_fn_name)
         results = read_fn(request.user.clinic, session)
+
+        # BACFF-AVULSA-05 (LGPD Art. 37) — toda leitura BEM-SUCEDIDA gera um
+        # registro de auditoria, mesmo com 0 resultados (o acesso autorizado em
+        # si é a operação de tratamento a registrar). Gravado só depois de
+        # `read_fn` retornar sem levantar (PermissionDenied/ReportUnavailable
+        # não geram registro — não houve leitura de fato). Só metadados da
+        # operação: NUNCA nenhum campo de `results` é persistido aqui.
+        PortalReadAuditLog.objects.create(
+            clinic_user=request.user,
+            clinic=request.user.clinic,
+            session_id=session.session_id,
+            entity=self.entity_name,
+            record_count=len(results),
+        )
+
         return Response({'results': results, 'count': len(results)})
 
 
 class PatientsReportView(_ReportReadView):
     """GET /portal/api/reports/sessions/{session_id}/patients/"""
     read_fn_name = 'read_patients_report'
+    entity_name = 'patients'
 
 
 class AppointmentsReportView(_ReportReadView):
     """GET /portal/api/reports/sessions/{session_id}/appointments/"""
     read_fn_name = 'read_appointments_report'
+    entity_name = 'appointments'
+
+
+class ProfessionalsReportView(_ReportReadView):
+    """
+    GET /portal/api/reports/sessions/{session_id}/professionals/
+
+    Mesmo padrão anti-IDOR das outras views (sessão resolvida por
+    `ReportSession.objects.get(session_id=..., clinic=request.user.clinic)` em
+    `_ReportReadView.get`, 404 — nunca 403 — para sessão de outra clínica, para
+    não confirmar existência a quem não tem acesso). A entidade `professionals`
+    já sincroniza para a nuvem via `ProfessionalSyncStrategy` (syncro_gateway);
+    faltava só o endpoint de leitura no portal.
+    """
+    read_fn_name = 'read_professionals_report'
+    entity_name = 'professionals'
 
 
 class DashboardSummaryView(APIView):

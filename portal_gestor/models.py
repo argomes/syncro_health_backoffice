@@ -96,6 +96,64 @@ class ReportSession(models.Model):
         self.save(update_fields=['status', 'updated_at'])
 
 
+class PortalReadAuditLog(models.Model):
+    """
+    BACFF-AVULSA-05 (LGPD Art. 37 — registro das operações de tratamento de
+    dados pessoais). Grava toda leitura BEM-SUCEDIDA de relatório feita via
+    `_ReportReadView` (portal_gestor/views.py) — inclusive quando o resultado
+    tem 0 registros, já que o acesso em si (a consulta autorizada pela
+    TemporaryKey da sessão) já é a operação de tratamento a registrar, não só
+    o retorno de dado.
+
+    Guarda SOMENTE metadados da operação — NUNCA nome, documento, email,
+    metadata clínica ou qualquer outro campo de PHI/PII do titular. Isso é
+    estrutural, não uma promessa de código: o model só tem colunas de
+    metadados (quem, qual clínica, qual sessão, qual entidade, quantos
+    registros, quando) — não há campo aqui capaz de carregar dado do titular.
+
+    Distinto do `audit_log` que já existe no gateway local (Go) — aquele
+    audita ações já sincronizadas dentro da clínica; este audita o acesso de
+    LEITURA feito remotamente, pelo próprio portal, sobre dado já sincronizado
+    na nuvem.
+    """
+
+    clinic_user = models.ForeignKey(
+        'accounts.ClinicUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='portal_read_audit_logs',
+        help_text='Nulo se o usuário for removido depois — o registro de auditoria não pode desaparecer com ele.',
+    )
+    clinic = models.ForeignKey(
+        'clinics.Clinic',
+        on_delete=models.CASCADE,
+        related_name='portal_read_audit_logs',
+    )
+    session_id = models.UUIDField(
+        help_text='session_id da ReportSession que autorizou a leitura (não é FK — a sessão pode expirar/ser limpa sem apagar o log de auditoria).',
+    )
+    entity = models.CharField(
+        max_length=32,
+        help_text="Entidade acessada: 'patients', 'appointments' ou 'professionals'.",
+    )
+    record_count = models.PositiveIntegerField(
+        help_text='Quantidade de registros retornados pela leitura — pode ser 0.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Log de Auditoria de Leitura'
+        verbose_name_plural = 'Logs de Auditoria de Leitura'
+        indexes = [
+            models.Index(fields=['clinic', 'created_at']),
+            models.Index(fields=['session_id']),
+        ]
+
+    def __str__(self):
+        return f'{self.clinic_id} leu {self.entity} ({self.record_count} registros) em {self.created_at}'
+
+
 class ProductNotice(models.Model):
     """
     Aviso contextual dispensável (TASK-051) — substitui a ideia original de

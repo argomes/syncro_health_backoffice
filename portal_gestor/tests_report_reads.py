@@ -23,7 +23,7 @@ from rest_framework.exceptions import PermissionDenied
 from clinics.models import Clinic, ClinicStatus, Plan
 
 from . import crypto, report_reads, services
-from .models import ReportSessionStatus
+from .models import PortalReadAuditLog, ReportSessionStatus
 
 
 def _encrypt_field(plaintext: bytes, key: bytes) -> str:
@@ -155,6 +155,21 @@ class ReportReadsAccessControlTest(TestCase):
         with self.assertRaises(PermissionDenied):
             report_reads.read_appointments_report(self.clinic, session)
 
+    def test_professionals_entity_not_in_scope_rejected(self):
+        session = self._make_session(entities=['patients'])
+        with self.assertRaises(PermissionDenied):
+            report_reads.read_professionals_report(self.clinic, session)
+
+    def test_professionals_expired_session_rejected(self):
+        session = self._make_session(entities=['professionals'], expires_delta=timedelta(seconds=-1))
+        with self.assertRaises(PermissionDenied):
+            report_reads.read_professionals_report(self.clinic, session)
+
+    def test_professionals_missing_key_in_cache_rejected(self):
+        session = self._make_session(entities=['professionals'], put_key_in_cache=False)
+        with self.assertRaises(PermissionDenied):
+            report_reads.read_professionals_report(self.clinic, session)
+
     def test_expired_session_rejected(self):
         session = self._make_session(expires_delta=timedelta(seconds=-1))
         with self.assertRaises(PermissionDenied):
@@ -185,7 +200,7 @@ class ReportReadsHappyPathTest(TestCase):
         cache.clear()
         self.clinic = make_clinic()
         self.session = services.create_report_session(
-            clinic=self.clinic, created_by=None, entities=['patients', 'appointments'],
+            clinic=self.clinic, created_by=None, entities=['patients', 'appointments', 'professionals'],
             date_from=timezone.now() - timedelta(days=1), date_to=timezone.now(),
         )
         self.session.status = ReportSessionStatus.KEY_DELIVERED
@@ -336,5 +351,39 @@ class ReportReadsHappyPathTest(TestCase):
         mock_conn_ctx.return_value = self._mock_connection([foreign_row])
 
         results = report_reads.read_patients_report(self.clinic, self.session)
+
+        self.assertEqual(results, [])
+
+    @patch('portal_gestor.report_reads.clinic_db_connection')
+    def test_reads_professional_row_correctly(self, mock_conn_ctx):
+        """`professionals` não usa o envelope de criptografia por sessão (ver
+        docstring de read_professionals_report) — os dados chegam em texto
+        plano do Postgres da clínica, então o teste confere que a leitura
+        reflete exatamente o que foi inserido no fixture, sem passar por
+        decriptação alguma."""
+        prof_id = uuid.uuid4()
+        row = (
+            prof_id, 'Dra. Fulana de Tal', 'doctor', 'CRM', '123456-SP',
+            'active', {'especialidade': 'Cardiologia'}, '225125', timezone.now(),
+        )
+        mock_conn_ctx.return_value = self._mock_connection([row])
+
+        results = report_reads.read_professionals_report(self.clinic, self.session)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['id'], str(prof_id))
+        self.assertEqual(results[0]['name'], 'Dra. Fulana de Tal')
+        self.assertEqual(results[0]['role'], 'doctor')
+        self.assertEqual(results[0]['registry_type'], 'CRM')
+        self.assertEqual(results[0]['registry'], '123456-SP')
+        self.assertEqual(results[0]['status'], 'active')
+        self.assertEqual(results[0]['metadata'], {'especialidade': 'Cardiologia'})
+        self.assertEqual(results[0]['cbo_code'], '225125')
+
+    @patch('portal_gestor.report_reads.clinic_db_connection')
+    def test_professionals_empty_result_returns_empty_list_not_error(self, mock_conn_ctx):
+        mock_conn_ctx.return_value = self._mock_connection([])
+
+        results = report_reads.read_professionals_report(self.clinic, self.session)
 
         self.assertEqual(results, [])
