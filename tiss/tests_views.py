@@ -91,3 +91,33 @@ class TISSGuiaViewSetIsolationTests(APITestCase):
         self.client.force_authenticate(user=self.billing_user_a)
         resp = self.client.get(f'/api/tiss/guias/{self.guia_a.id}/')
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+
+class TISSGuiaSerializerMaskingTests(APITestCase):
+    """
+    BACFF-AVULSA-02: numero_carteira não pode sair em texto pleno pela API
+    REST — mesma população de usuários (SupportUser com ClinicAccess) que
+    a máscara do Django Admin já protege.
+    """
+
+    def setUp(self):
+        self.clinic = _make_clinic('vs-mascara-api')
+        self.guia = TISSGuia.objects.create(
+            clinic=self.clinic, numero='M1', competencia='2026-07',
+            valor=Decimal('10.00'), numero_carteira='1234567890',
+        )
+        self.user = SupportUser.objects.create_user(username='billing3', password='x', role=SupportUser.Role.BILLING)
+        ClinicAccess.objects.create(support_user=self.user, clinic=self.clinic, role='viewer')
+
+    def test_numero_carteira_vem_mascarado_no_detail(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get(f'/api/tiss/guias/{self.guia.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['numero_carteira'], '****7890')
+        self.assertNotIn('1234567890', str(resp.data))
+
+    def test_numero_carteira_vem_mascarado_na_listagem(self):
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get('/api/tiss/guias/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertNotIn('1234567890', str(resp.data))

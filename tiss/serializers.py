@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from .models import (
     TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
-    TUSSProcedureCode, ANSInsuranceOperator,
+    TUSSProcedureCode, ANSInsuranceOperator, mascarar_numero_carteira,
 )
 
 
@@ -55,6 +55,10 @@ class TISSGlosaSerializer(serializers.ModelSerializer):
 
 class TISSGuiaSerializer(serializers.ModelSerializer):
     glosas = TISSGlosaSerializer(many=True, read_only=True)
+    # BACFF-AVULSA-02: numero_carteira bruto nunca sai por essa API
+    # (ReadOnlyModelViewSet — sem risco de write). O XML TISS real é
+    # montado internamente a partir do model, não deste serializer.
+    numero_carteira = serializers.SerializerMethodField()
 
     class Meta:
         model = TISSGuia
@@ -64,6 +68,9 @@ class TISSGuiaSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_numero_carteira(self, obj):
+        return mascarar_numero_carteira(obj.numero_carteira)
 
 
 class TISSLoteSerializer(serializers.ModelSerializer):

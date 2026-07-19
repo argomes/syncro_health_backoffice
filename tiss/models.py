@@ -123,6 +123,18 @@ class TISSLote(models.Model):
         return (last.numero_lote + 1) if last else 1
 
 
+def mascarar_numero_carteira(valor: str) -> str:
+    """
+    BACFF-AVULSA-02: dado permanece em texto pleno no banco (necessário
+    para montar o XML TISS real) — só a exibição (admin e API REST) é
+    mascarada. Compartilhado entre `TISSGuiaAdmin` e `TISSGuiaSerializer`
+    para não duplicar a regra em dois lugares.
+    """
+    if not valor:
+        return '—'
+    return f'****{valor[-4:]}' if len(valor) > 4 else '****'
+
+
 class TISSGuiaStatus(models.TextChoices):
     NAO_ENVIADA = 'nao_enviada', 'Não enviada'
     ENVIADA = 'enviada', 'Enviada'

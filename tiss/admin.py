@@ -5,7 +5,7 @@ from django.utils.html import format_html
 from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 from .models import (
     TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
-    TUSSProcedureCode, ANSInsuranceOperator,
+    TUSSProcedureCode, ANSInsuranceOperator, mascarar_numero_carteira,
 )
 from .services import enviar_lote, TISSServiceError
 
@@ -61,10 +61,41 @@ class TISSLoteAdmin(TenantScopedAdminMixin, BaseAdmin):
 
 @admin.register(TISSGuia)
 class TISSGuiaAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # BACFF-AVULSA-02: numero_carteira/beneficiario_nome continuam no banco
+    # em texto pleno (dado de negócio real, necessário para montar o XML
+    # TISS assinado à operadora — diferente de TISSElegibilidadeConsulta,
+    # aqui não dá pra mascarar/remover na persistência). O que muda é só a
+    # EXIBIÇÃO no admin: quem tem acesso de suporte à clínica vê versão
+    # mascarada no formulário de detalhe, nunca o dado completo. Os campos
+    # brutos são substituídos pelos métodos mascarados em `fields` — não
+    # aparecem em nenhum form editável (guia é gerada pelo sistema, não
+    # editada manualmente via admin).
     list_display = ('numero', 'clinic', 'competencia', 'status_colorido', 'valor', 'created_at')
     list_filter = ('status', 'competencia', 'clinic')
     search_fields = ('numero', 'appointment_id', 'clinic__name')
-    readonly_fields = ('id', 'created_at', 'updated_at')
+    readonly_fields = (
+        'id', 'created_at', 'updated_at',
+        'numero_carteira_mascarado', 'beneficiario_nome_mascarado',
+    )
+    fields = (
+        'id', 'clinic', 'lote', 'appointment_id', 'tipo', 'numero', 'competencia', 'status',
+        'numero_carteira_mascarado', 'beneficiario_nome_mascarado',
+        'procedimentos', 'valor', 'created_at', 'updated_at',
+    )
+
+    @admin.display(description='Nº Carteira')
+    def numero_carteira_mascarado(self, obj):
+        return mascarar_numero_carteira(obj.numero_carteira if obj else '')
+
+    @admin.display(description='Beneficiário')
+    def beneficiario_nome_mascarado(self, obj):
+        v = obj.beneficiario_nome if obj else ''
+        if not v:
+            return '—'
+        partes = v.split()
+        if len(partes) == 1:
+            return f'{partes[0][0]}***'
+        return f"{partes[0]} {'*' * len(partes[-1])}"
 
     @admin.display(description='Status')
     def status_colorido(self, obj):
