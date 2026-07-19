@@ -98,3 +98,67 @@ class TenantScopedAdminTests(TestCase):
         admin = TISSGuiaAdmin(TISSGuia, self.site)
         qs = admin.get_queryset(self._request_for(analyst_none))
         self.assertEqual(list(qs), [])
+
+
+class TISSGuiaMaskedDisplayTests(TestCase):
+    """
+    BACFF-AVULSA-02: numero_carteira/beneficiario_nome continuam em texto
+    pleno no banco (necessário para montar o XML enviado à operadora) — só
+    a EXIBIÇÃO no admin é mascarada. Prova que os métodos mascarados nunca
+    retornam o dado bruto, e que os campos brutos não aparecem em `fields`.
+    """
+
+    def setUp(self):
+        self.site = AdminSite()
+        self.admin = TISSGuiaAdmin(TISSGuia, self.site)
+        clinic = _make_clinic('masked-guia')
+        self.guia = TISSGuia.objects.create(
+            clinic=clinic, numero='1', competencia='2026-07',
+            beneficiario_nome='Maria Silva Santos', numero_carteira='1234567890',
+        )
+
+    def test_numero_carteira_mascarado_shows_only_last_4_digits(self):
+        masked = self.admin.numero_carteira_mascarado(self.guia)
+        self.assertEqual(masked, '****7890')
+        self.assertNotIn(self.guia.numero_carteira, masked)
+
+    def test_numero_carteira_mascarado_short_value_fully_masked(self):
+        self.guia.numero_carteira = '123'
+        masked = self.admin.numero_carteira_mascarado(self.guia)
+        self.assertEqual(masked, '****')
+
+    def test_numero_carteira_mascarado_empty_shows_dash(self):
+        self.guia.numero_carteira = ''
+        self.assertEqual(self.admin.numero_carteira_mascarado(self.guia), '—')
+
+    def test_beneficiario_nome_mascarado_keeps_first_name_masks_last(self):
+        masked = self.admin.beneficiario_nome_mascarado(self.guia)
+        self.assertEqual(masked, 'Maria ******')
+        self.assertNotIn('Santos', masked)
+
+    def test_beneficiario_nome_mascarado_single_name(self):
+        self.guia.beneficiario_nome = 'Maria'
+        masked = self.admin.beneficiario_nome_mascarado(self.guia)
+        self.assertEqual(masked, 'M***')
+
+    def test_beneficiario_nome_mascarado_empty_shows_dash(self):
+        self.guia.beneficiario_nome = ''
+        self.assertEqual(self.admin.beneficiario_nome_mascarado(self.guia), '—')
+
+    def test_masked_methods_handle_add_view_with_no_object(self):
+        """Tela de adicionar (obj=None) não pode quebrar com AttributeError."""
+        self.assertEqual(self.admin.numero_carteira_mascarado(None), '—')
+        self.assertEqual(self.admin.beneficiario_nome_mascarado(None), '—')
+
+    def test_raw_pii_fields_not_in_admin_fields(self):
+        """beneficiario_nome/numero_carteira brutos nunca aparecem editáveis no form."""
+        self.assertNotIn('numero_carteira', self.admin.fields)
+        self.assertNotIn('beneficiario_nome', self.admin.fields)
+        self.assertIn('numero_carteira_mascarado', self.admin.fields)
+        self.assertIn('beneficiario_nome_mascarado', self.admin.fields)
+
+    def test_raw_pii_fields_not_in_list_display_or_search(self):
+        self.assertNotIn('beneficiario_nome', self.admin.list_display)
+        self.assertNotIn('numero_carteira', self.admin.list_display)
+        self.assertNotIn('beneficiario_nome', self.admin.search_fields)
+        self.assertNotIn('numero_carteira', self.admin.search_fields)
