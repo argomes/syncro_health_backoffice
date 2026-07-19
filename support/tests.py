@@ -1,4 +1,5 @@
 import uuid
+from django.db.models.signals import post_save
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -6,7 +7,7 @@ from rest_framework import status
 
 from clinics.models import Clinic, ClinicStatus, Plan, ProvisioningStatus
 from accounts.models import SupportUser, ClinicAccess
-from .models import Ticket, TicketMessage
+from .models import Ticket, TicketMessage, sync_ticket_to_notion
 
 
 def make_clinic(name='Clínica Teste'):
@@ -24,6 +25,14 @@ def make_clinic(name='Clínica Teste'):
     
     
 class TicketAPITest(TestCase):  # ✅ TestCase, não APITestCase
+    @classmethod
+    def setUpClass(cls):
+        # Desconecta o signal que enfileira sync_ticket_to_notion — sem isso,
+        # com CELERY_TASK_ALWAYS_EAGER=True (default local quando DEBUG=True),
+        # cada Ticket.objects.create() chama a API real do Notion.
+        super().setUpClass()
+        post_save.disconnect(sync_ticket_to_notion, sender=Ticket)
+
     def setUp(self):
         self.client = APIClient()  # ✅ APIClient simples
         self.clinic = make_clinic()
@@ -163,6 +172,12 @@ class TicketAPITest(TestCase):  # ✅ TestCase, não APITestCase
 
 
 class TicketMessageAPITest(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Ver comentário em TicketAPITest.setUpClass.
+        super().setUpClass()
+        post_save.disconnect(sync_ticket_to_notion, sender=Ticket)
+
     def setUp(self):
         self.client = APIClient()
         self.clinic = make_clinic()

@@ -11,13 +11,14 @@ from io import StringIO
 
 from django.contrib.auth.models import Group
 from django.core.management import call_command
+from django.db.models.signals import post_save
 from django.test import Client, TestCase
 from django.urls import reverse
 
 from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic, ClinicStatus, Plan
 
-from .models import Ticket, TicketMessage
+from .models import Ticket, TicketMessage, sync_ticket_to_notion
 
 
 def make_clinic(**overrides):
@@ -41,6 +42,14 @@ def seed_groups():
 
 
 class SupportAdminTenantScopingTest(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Desconecta o signal que enfileira sync_ticket_to_notion — sem isso,
+        # com CELERY_TASK_ALWAYS_EAGER=True (default local quando DEBUG=True),
+        # cada Ticket.objects.create() chama a API real do Notion.
+        super().setUpClass()
+        post_save.disconnect(sync_ticket_to_notion, sender=Ticket)
+
     def setUp(self):
         seed_groups()
         self.clinic_a = make_clinic(name='Clínica Support A')
