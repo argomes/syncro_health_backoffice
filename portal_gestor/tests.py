@@ -353,11 +353,11 @@ class CacheBackendProductionGuardTest(TestCase):
         self.assertIn('CACHE_URL', result.stderr)
 
     def test_debug_false_with_cache_url_boots(self):
-        # TISS_FERNET_KEY, EMAIL_* e CELERY_TASK_ALWAYS_EAGER também são
-        # exigidos com DEBUG=False (ver TissFernetKeyProductionGuardTest,
-        # CeleryEagerProductionGuardTest e TASK-BO-12 em settings.py) —
-        # setar aqui pra isolar o que este teste quer provar (o guard de
-        # CACHE_URL).
+        # TISS_FERNET_KEY, EMAIL_*, CELERY_TASK_ALWAYS_EAGER e TISS_SOAP_MOCK
+        # também são exigidos com DEBUG=False (ver TissFernetKeyProductionGuardTest,
+        # CeleryEagerProductionGuardTest, TissSoapMockProductionGuardTest e
+        # TASK-BO-12 em settings.py) — setar aqui pra isolar o que este
+        # teste quer provar (o guard de CACHE_URL).
         result = self._boot_with_env({
             'DEBUG': 'False',
             'CACHE_URL': 'redis://localhost:6379/1',
@@ -367,6 +367,7 @@ class CacheBackendProductionGuardTest(TestCase):
             'EMAIL_HOST_PASSWORD': 'placeholder-token',
             'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
             'CELERY_TASK_ALWAYS_EAGER': 'False',
+            'TISS_SOAP_MOCK': 'False',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -423,6 +424,7 @@ class TissFernetKeyProductionGuardTest(TestCase):
             'EMAIL_HOST_PASSWORD': 'placeholder-token',
             'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
             'CELERY_TASK_ALWAYS_EAGER': 'False',
+            'TISS_SOAP_MOCK': 'False',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -478,10 +480,69 @@ class CeleryEagerProductionGuardTest(TestCase):
             'EMAIL_HOST_PASSWORD': 'placeholder-token',
             'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
             'CELERY_TASK_ALWAYS_EAGER': 'False',
+            'TISS_SOAP_MOCK': 'False',
         })
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_debug_true_without_celery_eager_boots_with_default(self):
+        result = self._boot_with_env({'DEBUG': 'True'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TissSoapMockProductionGuardTest(TestCase):
+    """
+    BACFF-012: TISS_SOAP_MOCK não pode depender implicitamente de DEBUG —
+    se DEBUG=True vazasse para produção (mesma classe de erro já corrigida
+    em CACHE_URL/TISS_FERNET_KEY/CORS_ALLOW_ALL_ORIGINS/
+    CELERY_TASK_ALWAYS_EAGER), tiss/soap_client.py passaria a devolver
+    respostas mockadas silenciosamente em vez de bater na rede real da
+    operadora. settings.py deve falhar cedo (RuntimeError no boot) se
+    DEBUG=False e TISS_SOAP_MOCK não estiver configurado explicitamente.
+
+    Roda em subprocesso pelo mesmo motivo das classes acima: settings já
+    está carregado no processo de teste.
+    """
+
+    def _boot_with_env(self, extra_env):
+        env = os.environ.copy()
+        env.update(extra_env)
+        result = subprocess.run(
+            [sys.executable, '-c', 'import django; django.setup()'],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result
+
+    def test_debug_false_without_tiss_soap_mock_fails_fast(self):
+        env = {'DEBUG': 'False', 'CACHE_URL': 'redis://localhost:6379/1',
+               'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+               'EMAIL_HOST': 'smtp.zeptomail.com', 'EMAIL_HOST_USER': 'emailapikey',
+               'EMAIL_HOST_PASSWORD': 'placeholder-token',
+               'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
+               'CELERY_TASK_ALWAYS_EAGER': 'False'}
+        env.pop('TISS_SOAP_MOCK', None)
+        result = self._boot_with_env(env)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('TISS_SOAP_MOCK', result.stderr)
+
+    def test_debug_false_with_tiss_soap_mock_boots(self):
+        result = self._boot_with_env({
+            'DEBUG': 'False',
+            'CACHE_URL': 'redis://localhost:6379/1',
+            'TISS_FERNET_KEY': 'Uu6l1z9ZQvX3m6nF8pQe2sYt7wA1bC4dE5fG6hJ8kL0=',
+            'EMAIL_HOST': 'smtp.zeptomail.com',
+            'EMAIL_HOST_USER': 'emailapikey',
+            'EMAIL_HOST_PASSWORD': 'placeholder-token',
+            'DEFAULT_FROM_EMAIL': 'naoresponda@syncrohealth.com.br',
+            'CELERY_TASK_ALWAYS_EAGER': 'False',
+            'TISS_SOAP_MOCK': 'False',
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_debug_true_without_tiss_soap_mock_boots_with_default(self):
         result = self._boot_with_env({'DEBUG': 'True'})
         self.assertEqual(result.returncode, 0, result.stderr)
 
