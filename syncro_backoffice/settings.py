@@ -434,17 +434,14 @@ if not DEBUG and not TISS_FERNET_KEY:
     )
 
 # Diretório com os XSDs oficiais ANS (tissV4_02_00.xsd e includes) usados
-# por tiss/xml_validator.py para validar o lote antes do envio SOAP. Fonte
-# de verdade fora deste repositório — apontar para onde a documentação
-# oficial ANS (PadroTISSComunicao) foi baixada no ambiente.
+# por tiss/xml_validator.py para validar o lote antes do envio SOAP.
+# Default: schemas versionados dentro do próprio repo (funciona em
+# dev/CI/produção sem configuração externa). TISS_XSD_DIR permite apontar
+# para outra versão/local (ex.: atualização futura do padrão TISS) sem
+# precisar alterar código.
 TISS_XSD_DIR = env(
     'TISS_XSD_DIR',
-    default=str(
-        BASE_DIR.parent
-        / 'Documents'
-        / 'PadroTISSComunicao202505'
-        / 'Padrão TISS Comunicação 040200'
-    ),
+    default=str(BASE_DIR / 'tiss' / 'schemas' / 'ans_tiss_v4_02_00'),
 )
 
 # Quando True, tiss/soap_client.py intercepta a chamada SOAP e devolve uma
