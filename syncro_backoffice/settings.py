@@ -165,6 +165,10 @@ REST_FRAMEWORK = {
         # deliberadamente baixa — recomendação do Security Engineer:
         # 5-10/hora por IP.
         'db_access_grant': '8/hour',
+        # BACFF-AVULSA-03 (2026-07-20): endpoints de referência TUSS/ANS
+        # (dados públicos) — rate acima do default anon, mas ainda contida,
+        # para não travar o cache-aside do gateway sob uso legítimo.
+        'reference_data': '30/minute',
     },
 }
 

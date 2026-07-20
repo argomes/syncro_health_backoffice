@@ -1,11 +1,12 @@
 from django.db.models import Sum, Count, Q
 from rest_framework import viewsets, status
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
 from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic
 from clinics.permissions import IsAuthenticatedByLicenseKey
+from syncro_backoffice.throttling import ReferenceDataRateThrottle
 
 from .models import (
     TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSLoteStatus, TISSElegibilidadeConsulta,
@@ -227,6 +228,7 @@ def verificar_elegibilidade(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedByLicenseKey])
+@throttle_classes([ReferenceDataRateThrottle])
 def procedure_code_lookup(request, tuss_code):
     """
     GET /api/tiss/reference/procedure-codes/{tuss_code}/ — consumido pelo
@@ -244,6 +246,7 @@ def procedure_code_lookup(request, tuss_code):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedByLicenseKey])
+@throttle_classes([ReferenceDataRateThrottle])
 def insurance_operator_lookup(request, ans_code):
     """
     GET /api/tiss/reference/operators/{ans_code}/ — mesmo padrão cache-aside
@@ -258,6 +261,7 @@ def insurance_operator_lookup(request, ans_code):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedByLicenseKey])
+@throttle_classes([ReferenceDataRateThrottle])
 def procedure_code_search(request):
     """
     GET /api/tiss/reference/procedure-codes/search/?q=... — usado pelo
@@ -276,6 +280,7 @@ def procedure_code_search(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticatedByLicenseKey])
+@throttle_classes([ReferenceDataRateThrottle])
 def insurance_operator_search(request):
     """
     GET /api/tiss/reference/operators/search/?q=... — mesmo padrão de
