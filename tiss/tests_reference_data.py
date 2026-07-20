@@ -1,6 +1,9 @@
 import uuid
 
+from django.conf import settings
+from django.core.cache import cache
 from django.test import TestCase
+from rest_framework import status
 from rest_framework.test import APIClient
 
 from clinics.models import Clinic, ClinicStatus, Plan, ProvisioningStatus
@@ -89,3 +92,59 @@ class ReferenceDataEndpointsTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]['ans_code'], '301949')
+
+
+class ReferenceDataThrottleTests(TestCase):
+    """
+    BACFF-AVULSA-03 (2026-07-20): os 4 endpoints de referência TUSS/ANS
+    dependiam só do AnonRateThrottle default (60/min por IP), insuficiente
+    para diferenciar uso legítimo do gateway (cache-aside) de scraping
+    fatiado da tabela pública TUSS/ANS. Agora usam throttle dedicado
+    (ReferenceDataRateThrottle, scope='reference_data').
+
+    NOTA: assim como em clinics/tests_db_access_grant.py, a rate real de
+    produção é lida dinamicamente de settings.py — SimpleRateThrottle lê
+    THROTTLE_RATES de api_settings no import do módulo, então
+    override_settings(REST_FRAMEWORK=...) em tempo de teste não teria efeito.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.clinic = make_clinic()
+        TUSSProcedureCode.objects.update_or_create(
+            tuss_code='81000030', defaults={'description': 'Consulta odontológica', 'table_code': '90'},
+        )
+        rate = settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['reference_data']
+        num_requests, period = rate.split('/')
+        assert period == 'minute', "teste assume rate por minuto; ajustar se a unidade mudar"
+        self.limit = int(num_requests)
+
+    def _lookup(self):
+        return self.client.get(
+            '/api/tiss/reference/procedure-codes/81000030/',
+            HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
+        )
+
+    def test_calls_within_limit_succeed(self):
+        for _ in range(self.limit):
+            self.assertEqual(self._lookup().status_code, status.HTTP_200_OK)
+
+    def test_call_beyond_limit_returns_429(self):
+        for _ in range(self.limit):
+            self.assertEqual(self._lookup().status_code, status.HTTP_200_OK)
+
+        response = self._lookup()
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_search_endpoint_shares_same_throttle_scope(self):
+        # procedure_code_search compartilha o mesmo scope (reference_data) e
+        # o mesmo balde por IP que procedure_code_lookup.
+        for _ in range(self.limit):
+            self.assertEqual(self._lookup().status_code, status.HTTP_200_OK)
+
+        response = self.client.get(
+            '/api/tiss/reference/procedure-codes/search/?q=81000030',
+            HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
+        )
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)

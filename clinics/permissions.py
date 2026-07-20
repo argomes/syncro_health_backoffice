@@ -1,5 +1,9 @@
+import logging
+
 from rest_framework.permissions import BasePermission
 from .models import Clinic, ClinicStatus
+
+logger = logging.getLogger(__name__)
 
 
 class IsAuthenticatedByLicenseKey(BasePermission):
@@ -17,7 +21,17 @@ class IsAuthenticatedByLicenseKey(BasePermission):
             clinic = Clinic.objects.get(license_key=license_key, status=ClinicStatus.ACTIVE)
             request.clinic = clinic
             return True
-        except (Clinic.DoesNotExist, Exception):
+        except Clinic.DoesNotExist:
+            return False
+        except Exception:
+            # BACFF-AVULSA-04: erro inesperado (DB fora do ar, bug de query
+            # etc.) não é a mesma coisa que uma license_key inválida — sem
+            # esse except dedicado, os dois casos ficavam indistinguíveis
+            # nos logs, mascarando instabilidade de infra como tentativa de
+            # acesso inválida. Logamos com stack trace (sem expor detalhe
+            # técnico na resposta ao cliente) e tratamos como não
+            # autenticado.
+            logger.exception('Erro inesperado em IsAuthenticatedByLicenseKey.has_permission')
             return False
 
 
@@ -36,7 +50,12 @@ class IsAuthenticatedByAnyLicenseKey(BasePermission):
             clinic = Clinic.objects.get(license_key=license_key)
             request.clinic = clinic
             return True
-        except (Clinic.DoesNotExist, Exception):
+        except Clinic.DoesNotExist:
+            return False
+        except Exception:
+            # BACFF-AVULSA-04: mesmo padrão de IsAuthenticatedByLicenseKey —
+            # ver comentário acima.
+            logger.exception('Erro inesperado em IsAuthenticatedByAnyLicenseKey.has_permission')
             return False
 
 

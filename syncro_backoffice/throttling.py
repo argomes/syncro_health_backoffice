@@ -25,3 +25,15 @@ class DbAccessGrantRateThrottle(AnonRateThrottle):
     # AnonRateThrottle default (60/min), insuficiente para uma ação
     # administrativa sensível e rara. Rate própria e baixa em settings.py.
     scope = 'db_access_grant'
+
+
+class ReferenceDataRateThrottle(AnonRateThrottle):
+    # BACFF-AVULSA-03 (correção 2026-07-20): os 4 endpoints de referência
+    # TUSS/ANS (procedure_code_lookup, insurance_operator_lookup,
+    # procedure_code_search, insurance_operator_search) usam apenas
+    # IsAuthenticatedByLicenseKey (permission, não authentication) e
+    # herdavam só o AnonRateThrottle default (60/min por IP) — insuficiente
+    # para diferenciar uso legítimo do gateway (cache-aside) de scraping
+    # fatiado da tabela pública TUSS/ANS. Dado é público; o risco aqui é
+    # carga/disponibilidade, não vazamento.
+    scope = 'reference_data'
