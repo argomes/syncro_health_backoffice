@@ -1,9 +1,21 @@
 from unittest.mock import patch
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from clinics.models import Clinic, ClinicStatus, Plan
 from clinics.services import sync_clinic_modules
 
 
+# BACFF-006: o test runner do Django força settings.DEBUG = False
+# incondicionalmente durante `manage.py test` (django.test.utils.setup_test_environment),
+# independente do DEBUG=True setado no .env/CI. sync_clinic_modules() chama
+# generate_service_token() -> generate_or_load_keys(), que levanta RuntimeError
+# se DEBUG=False e não houver SERVICE_TOKEN_PRIVATE_KEY/PUBLIC_KEY em env nem
+# arquivos .service_jwt_*.pem locais. Em ambiente de dev local esses arquivos
+# costumam já existir (gerados por um `manage.py test` anterior) mascarando o
+# problema — mas não existem num checkout limpo de CI, onde o guard de
+# produção então dispara de verdade. Mesmo padrão já usado em
+# clinics/tests_service_token.py: @override_settings(DEBUG=True) nos testes
+# que exercitam o fluxo de geração/uso de token, não o guard em si.
+@override_settings(DEBUG=True)
 class ClinicModulesTests(TestCase):
     def setUp(self):
         self.clinic = Clinic.objects.create(
