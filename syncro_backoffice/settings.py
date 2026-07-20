@@ -451,6 +451,22 @@ TISS_XSD_DIR = env(
 # Quando True, tiss/soap_client.py intercepta a chamada SOAP e devolve uma
 # resposta fixa (sucesso ou erro) em vez de bater na rede — permite testar
 # o fluxo completo de envio de lote sem credenciais/sandbox de operadora real.
+#
+# BACFF-012: antes, o default era `DEBUG` — mesma classe de erro já corrigida
+# em CACHE_URL/TISS_FERNET_KEY/CORS_ALLOW_ALL_ORIGINS/CELERY_TASK_ALWAYS_EAGER:
+# se DEBUG=True vazasse para produção, o cliente SOAP de TISS passaria a
+# devolver respostas mockadas silenciosamente em vez de bater na rede real da
+# operadora — sem nenhum erro visível. Mesmo padrão de fail-fast: em produção
+# (DEBUG=False), a variável precisa estar explicitamente definida no ambiente
+# — nunca deve depender implicitamente de DEBUG.
+if not DEBUG and 'TISS_SOAP_MOCK' not in os.environ:
+    raise RuntimeError(
+        'TISS_SOAP_MOCK não configurado explicitamente com DEBUG=False. '
+        'Defina TISS_SOAP_MOCK=False no ambiente de produção (SOAP real da '
+        'operadora) — não deve depender implicitamente de DEBUG, sob risco '
+        'de lotes TISS serem "enviados" apenas de forma mockada, sem bater '
+        'na rede real da operadora.'
+    )
 TISS_SOAP_MOCK = env.bool('TISS_SOAP_MOCK', default=DEBUG)
 
 # TASK-BO-12 — Email transacional via ZeptoMail (Zoho SMTP relay), usado hoje
