@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     'portal_gestor',
     'tiss',
     'holidays',
+    'municipios',
 ]
 
 MIDDLEWARE = [
