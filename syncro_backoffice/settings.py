@@ -16,7 +16,8 @@ SECRET_KEY = env('SECRET_KEY')
 DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
-
+API_HOLIDAY =  env('API_URL', default="https://feriadosapi.com/api")
+API_HOLIDAY_KEY = env('API_HOLIDAY_KEY', default="1231312")
 # Railway (e qualquer VPS atrás de nginx/Caddy/Traefik) termina TLS na borda
 # e repassa a requisição pro gunicorn em HTTP puro — sem isso, request.is_secure()
 # sempre retorna False mesmo servindo HTTPS de verdade, o que quebra o cookie
@@ -63,6 +64,7 @@ INSTALLED_APPS = [
     'integrations',
     'portal_gestor',
     'tiss',
+    'holidays',
 ]
 
 MIDDLEWARE = [

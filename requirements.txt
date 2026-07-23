@@ -29,6 +29,7 @@ PyJWT==2.13.0
 python-dateutil==2.9.0.post0
 python-nvd3==0.16.0
 python-slugify==8.0.4
+requests==2.34.2
 six==1.17.0
 sqlparse==0.5.5
 text-unidecode==1.3
