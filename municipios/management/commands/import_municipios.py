@@ -12,9 +12,10 @@ class Command(BaseCommand):
     tabela `Municipio` (BACFF-015).
 
     O repositório já traz uma cópia da lista oficial em
-    `municipios/data/ibge_municipios.json` (5571 municípios, obtida da
-    API pública do IBGE — https://servicodados.ibge.gov.br/api/v1/localidades/municipios),
-    então o uso normal é sem argumento:
+    `municipios/data/ibge_municipios.json` (5571 municípios, codigo_ibge/
+    nome/uf — convertida de uma lista de referência de municípios do IBGE
+    com codigo_uf numérico mapeado para a sigla de 2 letras), então o uso
+    normal é sem argumento:
 
         python manage.py import_municipios
 

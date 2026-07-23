@@ -1,4 +1,4 @@
-from .models import Municipio
+from .models import Municipio, normalizar_texto
 from .timezones import resolve_timezone
 
 MAX_RESULTS = 20
@@ -18,7 +18,10 @@ class MunicipioService:
             return []
 
         limit = min(limit or MAX_RESULTS, MAX_RESULTS)
-        municipios = Municipio.objects.filter(nome__icontains=termo).order_by("nome")[:limit]
+        termo_normalizado = normalizar_texto(termo)
+        municipios = Municipio.objects.filter(
+            nome_normalizado__icontains=termo_normalizado
+        ).order_by("nome")[:limit]
 
         return [cls._serialize(m) for m in municipios]
 

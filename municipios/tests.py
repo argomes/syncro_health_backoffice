@@ -1,8 +1,18 @@
 from django.urls import reverse
 from rest_framework.test import APITestCase, APIClient
 
-from municipios.models import Municipio
+from municipios.models import Municipio, normalizar_texto
 from municipios.timezones import TIMEZONE_BY_UF, resolve_timezone
+
+
+class NormalizarTextoTests(APITestCase):
+    def test_remove_acentos_e_normaliza_caixa(self):
+        self.assertEqual(normalizar_texto("São Paulo"), "sao paulo")
+        self.assertEqual(normalizar_texto("Conceição da Feira"), "conceicao da feira")
+
+    def test_texto_vazio_retorna_vazio(self):
+        self.assertEqual(normalizar_texto(""), "")
+        self.assertEqual(normalizar_texto(None), "")
 
 
 class MunicipioModelTests(APITestCase):
@@ -103,3 +113,12 @@ class MunicipioSearchViewTests(APITestCase):
         response = self.client.get(self.url, {'q': 'MunicipioInexistenteXYZ'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
+
+    def test_busca_sem_acento_encontra_municipio_acentuado(self):
+        # Achado real da revisão do BACFF-015: a maioria dos usuários digita
+        # sem acento num campo de busca rápida — "sao paulo" precisa achar
+        # "São Paulo", não retornar lista vazia silenciosamente.
+        response = self.client.get(self.url, {'q': 'sao paulo'})
+        dados = response.json()
+        self.assertEqual(len(dados), 1)
+        self.assertEqual(dados[0]['nome'], 'São Paulo')
