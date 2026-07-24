@@ -1,12 +1,22 @@
 import uuid
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from clinics.models import Clinic, ClinicStatus, Plan, ProvisioningStatus
-from .models import TISSOperatorConfig, TISSElegibilidadeConsulta, TISSElegibilidadeOrigem, TISSElegibilidadeStatus
+from .models import (
+    TISSOperatorConfig, TISSElegibilidadeConsulta, TISSElegibilidadeOrigem, TISSElegibilidadeStatus,
+    TISSGatewayProvider,
+)
 from .services import (
     consultar_elegibilidade_automatica, registrar_elegibilidade_manual, TISSServiceError,
+    ElegibilidadeRespostaCompleta,
+)
+from .soap_client import ElegibilidadeResult
+from .orizon_autorize_client import (
+    AutorizacaoResult, SOAPFaultResult as OrizonSOAPFaultResult, SituacaoAutorizacao,
+    OrizonAutorizeClientError,
 )
 
 
@@ -202,3 +212,125 @@ class ElegibilidadeEndpointTests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['origem'], 'manual')
+
+
+@override_settings(TISS_SOAP_MOCK=True)
+class ConsultarElegibilidadeDispatchGatewayProviderTests(TestCase):
+    """
+    BACFF-014 — cobre o ponto de despacho em `consultar_elegibilidade_automatica`:
+    a escolha do client SOAP (genérico ANS vs. Orizon) deve seguir
+    `operator_config.gateway_provider`, nunca hardcoded. Antes desta task o
+    client Orizon existia mas nunca era chamado pelo fluxo real.
+    """
+
+    def setUp(self):
+        self.clinic = make_clinic()
+
+    def _make_operator(self, gateway_provider):
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Orizon', registro_ans='123456',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider=gateway_provider,
+        )
+        op.set_login('login-teste')
+        op.set_senha('senha-teste')
+        op.save(update_fields=['login_encrypted', 'senha_encrypted'])
+        return op
+
+    def test_default_sem_gateway_provider_explicito_usa_generico_ans(self):
+        """Sem valor explícito, o default do model (`generico_ans`) mantém o comportamento pré-existente."""
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Amil', registro_ans='654321',
+            endpoint_url='https://amil.example.com/Service.asmx',
+        )
+        self.assertEqual(op.gateway_provider, TISSGatewayProvider.GENERICO_ANS)
+        with patch('tiss.services.soap_verificar_elegibilidade') as mock_generico, \
+                patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+            mock_generico.return_value = ElegibilidadeResult(
+                elegivel=True, numero_carteira='CARTEIRA-D1', nome_beneficiario='', motivos_negativa=[], raw_response='<xml/>',
+            )
+            consulta = consultar_elegibilidade_automatica(
+                clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D1',
+            )
+        mock_generico.assert_called_once()
+        mock_orizon.assert_not_called()
+        self.assertTrue(consulta.elegivel)
+
+    def test_gateway_provider_generico_ans_explicito_chama_client_generico(self):
+        op = self._make_operator(TISSGatewayProvider.GENERICO_ANS)
+        with patch('tiss.services.soap_verificar_elegibilidade') as mock_generico, \
+                patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+            mock_generico.return_value = ElegibilidadeResult(
+                elegivel=False, numero_carteira='CARTEIRA-D2', nome_beneficiario='',
+                motivos_negativa=[('1822', 'Carteira vencida')], raw_response='<xml/>',
+            )
+            consulta = consultar_elegibilidade_automatica(
+                clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D2',
+            )
+        mock_generico.assert_called_once()
+        mock_orizon.assert_not_called()
+        self.assertFalse(consulta.elegivel)
+        self.assertEqual(consulta.motivos_negativa[0]['codigo'], '1822')
+
+    def test_gateway_provider_orizon_chama_client_orizon_e_normaliza_autorizado(self):
+        op = self._make_operator(TISSGatewayProvider.ORIZON)
+        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon, \
+                patch('tiss.services.soap_verificar_elegibilidade') as mock_generico:
+            mock_orizon.return_value = AutorizacaoResult(
+                situacao=SituacaoAutorizacao.AUTORIZADO,
+                numero_guia_operadora='GUIA-OP-999',
+                codigo_glosa='', descricao_glosa='', raw_response='<xml/>',
+            )
+            consulta = consultar_elegibilidade_automatica(
+                clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D3',
+                beneficiario_nome='Fulano',
+            )
+        mock_orizon.assert_called_once()
+        mock_generico.assert_not_called()
+        self.assertIsInstance(consulta, ElegibilidadeRespostaCompleta)
+        self.assertTrue(consulta.elegivel)
+        self.assertEqual(consulta.numero_guia_operadora, 'GUIA-OP-999')
+        self.assertEqual(consulta.beneficiario_nome, 'Fulano')
+        self.assertEqual(consulta.motivos_negativa, [])
+        log = TISSElegibilidadeConsulta.objects.get(clinic=self.clinic)
+        self.assertEqual(log.status, TISSElegibilidadeStatus.SUCESSO)
+
+    def test_gateway_provider_orizon_normaliza_negado_com_motivos(self):
+        op = self._make_operator(TISSGatewayProvider.ORIZON)
+        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+            mock_orizon.return_value = AutorizacaoResult(
+                situacao=SituacaoAutorizacao.NEGADO,
+                numero_guia_operadora='', codigo_glosa='3144',
+                descricao_glosa='Negativa mock', raw_response='<xml/>',
+            )
+            consulta = consultar_elegibilidade_automatica(
+                clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D4',
+            )
+        self.assertFalse(consulta.elegivel)
+        self.assertEqual(consulta.motivos_negativa, [{'codigo': '3144', 'descricao': 'Negativa mock'}])
+
+    def test_gateway_provider_orizon_normaliza_fault_como_falha_operadora(self):
+        op = self._make_operator(TISSGatewayProvider.ORIZON)
+        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+            mock_orizon.return_value = OrizonSOAPFaultResult(
+                codigo_erro='LoginInvalido', descricao_erro='Login ou senha inválidos', raw_response='<xml/>',
+            )
+            consulta = consultar_elegibilidade_automatica(
+                clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D5',
+            )
+        self.assertFalse(consulta.elegivel)
+        self.assertIn('LoginInvalido', consulta.erro_mensagem)
+        log = TISSElegibilidadeConsulta.objects.get(clinic=self.clinic)
+        self.assertEqual(log.status, TISSElegibilidadeStatus.FALHA_OPERADORA)
+        self.assertNotIn('CARTEIRA-D5', log.erro_mensagem)
+
+    def test_gateway_provider_orizon_falha_de_transporte_nao_propaga_excecao(self):
+        op = self._make_operator(TISSGatewayProvider.ORIZON)
+        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+            mock_orizon.side_effect = OrizonAutorizeClientError('soap_network_error')
+            consulta = consultar_elegibilidade_automatica(
+                clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D6',
+            )
+        self.assertFalse(consulta.elegivel)
+        log = TISSElegibilidadeConsulta.objects.get(clinic=self.clinic)
+        self.assertEqual(log.status, TISSElegibilidadeStatus.FALHA_TRANSPORTE)

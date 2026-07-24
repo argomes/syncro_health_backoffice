@@ -5,6 +5,7 @@ action `enviar` (tiss/views.py).
 """
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from xml.sax.saxutils import escape
 
 from django.db import transaction
@@ -12,6 +13,7 @@ from django.db import transaction
 from .models import (
     TISSLote, TISSLoteStatus, TISSGuia, TISSGuiaStatus, TISSGlosa,
     TISSElegibilidadeConsulta, TISSElegibilidadeOrigem, TISSElegibilidadeStatus,
+    TISSGatewayProvider,
 )
 from .xml_builder import build_lote_xml, XMLBuilderError
 from .xml_validator import validate_xml, XMLValidatorError
@@ -19,6 +21,12 @@ from .soap_client import (
     enviar_lote as soap_enviar_lote,
     verificar_elegibilidade as soap_verificar_elegibilidade,
     SOAPClientError, SOAPSuccessResult, SOAPFaultResult, ElegibilidadeResult,
+)
+from .orizon_autorize_xml_builder import build_solicitacao_procedimento_xml, OrizonAutorizeXMLBuilderError
+from .orizon_autorize_client import (
+    solicitar_autorizacao as orizon_solicitar_autorizacao,
+    OrizonAutorizeClientError, AutorizacaoResult, SOAPFaultResult as OrizonSOAPFaultResult,
+    SituacaoAutorizacao,
 )
 
 logger = logging.getLogger(__name__)
@@ -213,16 +221,37 @@ def consultar_elegibilidade_automatica(
     mock_scenario: str = 'success',
 ) -> ElegibilidadeRespostaCompleta:
     """
-    Consulta síncrona de elegibilidade via SOAP (tissVerificaElegibilidade_
-    Operation) — diferente de enviar_lote, não há estado intermediário
-    (BACFF-013: confirmado que elegibilidade não tem operação de polling/
-    status na spec ANS, ao contrário de lote).
+    Consulta síncrona de elegibilidade — despacha para o client certo
+    conforme `operator_config.gateway_provider` (BACFF-014). Antes desta
+    task, TODA operadora era tratada como genérico ANS mesmo quando
+    configurada como Orizon — o client Orizon existia mas nunca era
+    chamado pelo fluxo real. Sem estado intermediário em nenhum dos dois
+    casos (BACFF-013: elegibilidade não tem polling na spec ANS, ao
+    contrário de lote).
 
     BACFF-AVULSA-01: só persiste um log OPERACIONAL (sucesso/falha) no banco
     central — o conteúdo clínico completo (elegível, motivos, nome do
     beneficiário) só existe na resposta devolvida daqui, nunca no banco
     central. Quem precisa do histórico completo persiste localmente (Edge
     Gateway).
+    """
+    if operator_config.gateway_provider == TISSGatewayProvider.ORIZON:
+        return _consultar_elegibilidade_orizon(
+            clinic, operator_config, numero_carteira, beneficiario_nome, appointment_id, mock_scenario,
+        )
+    return _consultar_elegibilidade_generico_ans(
+        clinic, operator_config, numero_carteira, beneficiario_nome, appointment_id, mock_scenario,
+    )
+
+
+def _consultar_elegibilidade_generico_ans(
+    clinic, operator_config, numero_carteira: str,
+    beneficiario_nome: str, appointment_id: str, mock_scenario: str,
+) -> ElegibilidadeRespostaCompleta:
+    """
+    Client genérico contra o WSDL/schema padrão ANS (tissVerificaElegibilidade_
+    Operation) — comportamento pré-existente, mantido como default e
+    fallback para qualquer `gateway_provider` que não seja 'orizon'.
     """
     xml_pedido = _build_pedido_elegibilidade_xml(clinic, numero_carteira)
 
@@ -261,6 +290,115 @@ def consultar_elegibilidade_automatica(
         elegivel=False, numero_carteira=numero_carteira, beneficiario_nome=beneficiario_nome,
         origem=TISSElegibilidadeOrigem.AUTOMATICA, erro_mensagem=erro,
     )
+
+
+def _consultar_elegibilidade_orizon(
+    clinic, operator_config, numero_carteira: str,
+    beneficiario_nome: str, appointment_id: str, mock_scenario: str,
+) -> ElegibilidadeRespostaCompleta:
+    """
+    BACFF-014: a Orizon não tem operação de elegibilidade isolada — o
+    manual técnico documenta que a elegibilidade do beneficiário é
+    verificada DENTRO do próprio pedido de autorização
+    (solicitacaoProcedimentoWS/solicitacaoSP-SADT), resposta em
+    autorizacaoProcedimentoWS. Por isso não reaproveitamos
+    `soap_verificar_elegibilidade`/`ElegibilidadeResult` (assinatura do
+    client genérico) — chamamos `orizon_solicitar_autorizacao` e
+    normalizamos o retorno (`AutorizacaoResult`/`SOAPFaultResult` do módulo
+    Orizon) para o mesmo formato `ElegibilidadeRespostaCompleta` que este
+    serviço já devolve para o caminho genérico.
+
+    Este endpoint não recebe uma guia real (nem procedimentos) — só
+    numero_carteira/appointment_id — então montamos um objeto guia mínimo
+    (não persistido) só para reaproveitar `build_solicitacao_procedimento_xml`
+    sem duplicar a lógica de montagem de XML. `mock_scenario` aqui usa o
+    vocabulário do client Orizon ('autorizado'/'negado'/'em_analise'/
+    'fault'), diferente do client genérico ('success'/'negativa'/'error') —
+    ver mapeamento em `_ORIZON_MOCK_SCENARIO_MAP` abaixo.
+    """
+    guia_transiente = TISSGuia(
+        clinic=clinic,
+        appointment_id=appointment_id,
+        numero=appointment_id or 'ELEGIBILIDADE',
+        numero_carteira=numero_carteira,
+        procedimentos=[],
+    )
+    sequencial_transacao = datetime.now().strftime('%y%m%d%H%M%S')
+
+    try:
+        xml_solicitacao, _hash = build_solicitacao_procedimento_xml(
+            guia=guia_transiente, clinic=clinic, operator_config=operator_config,
+            sequencial_transacao=sequencial_transacao,
+        )
+    except OrizonAutorizeXMLBuilderError as exc:
+        erro = f'falha_montagem_xml_orizon: {exc}'
+        _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA, TISSElegibilidadeStatus.FALHA_TRANSPORTE, erro)
+        return ElegibilidadeRespostaCompleta(
+            elegivel=False, numero_carteira=numero_carteira, beneficiario_nome=beneficiario_nome,
+            origem=TISSElegibilidadeOrigem.AUTOMATICA, erro_mensagem=erro,
+        )
+
+    orizon_mock_scenario = _ORIZON_MOCK_SCENARIO_MAP.get(mock_scenario, mock_scenario)
+
+    try:
+        resultado = orizon_solicitar_autorizacao(
+            endpoint_url=operator_config.endpoint_url,
+            xml_solicitacao=xml_solicitacao,
+            mock_scenario=orizon_mock_scenario,
+        )
+    except OrizonAutorizeClientError as exc:
+        erro = f'falha_soap_orizon: {exc}'
+        _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA, TISSElegibilidadeStatus.FALHA_TRANSPORTE, erro)
+        return ElegibilidadeRespostaCompleta(
+            elegivel=False, numero_carteira=numero_carteira, beneficiario_nome=beneficiario_nome,
+            origem=TISSElegibilidadeOrigem.AUTOMATICA, erro_mensagem=erro,
+        )
+
+    if isinstance(resultado, AutorizacaoResult):
+        _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA, TISSElegibilidadeStatus.SUCESSO)
+        # A Orizon não devolve nome do beneficiário nesta operação (ao
+        # contrário do client genérico) — beneficiario_nome só reflete o
+        # que já veio do chamador. `situacao='em_analise'` não é uma
+        # negativa nem tem campo próprio em ElegibilidadeRespostaCompleta
+        # para estado pendente; registramos isso em erro_mensagem (técnico,
+        # sem PII) para o chamador decidir se faz polling depois
+        # (solicitacaoStatusAutorizacao — fora de escopo desta task).
+        motivos_negativa = []
+        erro_mensagem = ''
+        if resultado.situacao == SituacaoAutorizacao.NEGADO:
+            motivos_negativa = [{'codigo': resultado.codigo_glosa, 'descricao': resultado.descricao_glosa}]
+        elif resultado.situacao == SituacaoAutorizacao.EM_ANALISE:
+            erro_mensagem = 'orizon_autorizacao_em_analise'
+        return ElegibilidadeRespostaCompleta(
+            elegivel=(resultado.situacao == SituacaoAutorizacao.AUTORIZADO),
+            numero_carteira=numero_carteira,
+            beneficiario_nome=beneficiario_nome,
+            origem=TISSElegibilidadeOrigem.AUTOMATICA,
+            motivos_negativa=motivos_negativa,
+            numero_guia_operadora=resultado.numero_guia_operadora,
+            erro_mensagem=erro_mensagem,
+        )
+
+    # OrizonSOAPFaultResult — operadora rejeitou a PRÓPRIA solicitação
+    # (ex.: login inválido), não uma resposta sobre o beneficiário.
+    erro = f'{resultado.codigo_erro}: {resultado.descricao_erro}'
+    _log_elegibilidade(clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA, TISSElegibilidadeStatus.FALHA_OPERADORA, erro)
+    return ElegibilidadeRespostaCompleta(
+        elegivel=False, numero_carteira=numero_carteira, beneficiario_nome=beneficiario_nome,
+        origem=TISSElegibilidadeOrigem.AUTOMATICA, erro_mensagem=erro,
+    )
+
+
+# Vocabulário de mock diferente entre os dois clients (ver docstring de
+# _consultar_elegibilidade_orizon) — mapeado só para quem chama
+# consultar_elegibilidade_automatica sem saber qual client vai ser usado
+# internamente (ex.: testes/callers usando o vocabulário genérico
+# 'success'/'negativa'/'error' também funcionam contra o path Orizon).
+_ORIZON_MOCK_SCENARIO_MAP = {
+    'success': 'autorizado',
+    'negativa': 'negado',
+    'error': 'fault',
+}
 
 
 def registrar_elegibilidade_manual(

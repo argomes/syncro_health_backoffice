@@ -7,6 +7,18 @@ from clinics.models import Clinic
 from .crypto import encrypt_credential, decrypt_credential
 
 
+class TISSGatewayProvider(models.TextChoices):
+    """
+    BACFF-014: qual client SOAP usar para esta operadora — o genérico
+    (padrão ANS publicado, `tiss/soap_client.py`) ou um hub específico já
+    integrado (`tiss/orizon_autorize_client.py`). Novas operadoras/hubs
+    especulativos (Sulamérica, Porto Seguro etc.) NÃO entram aqui até
+    terem client próprio implementado.
+    """
+    GENERICO_ANS = 'generico_ans', 'Genérico (padrão ANS)'
+    ORIZON = 'orizon', 'Orizon (Autorize)'
+
+
 class TISSOperatorConfig(models.Model):
     """
     Credenciais/endpoint de uma operadora (ou hub, ex: Orizon) para uma
@@ -23,6 +35,10 @@ class TISSOperatorConfig(models.Model):
     registro_ans = models.CharField(max_length=6, help_text='Registro ANS da operadora (6 dígitos)')
     cnpj_operadora = models.CharField(max_length=14, blank=True)
     endpoint_url = models.URLField(max_length=255)
+    gateway_provider = models.CharField(
+        max_length=20, choices=TISSGatewayProvider, default=TISSGatewayProvider.GENERICO_ANS,
+        help_text='Qual client SOAP usar para esta operadora (genérico ANS ou hub específico como Orizon)',
+    )
 
     # Sempre armazenados cifrados (Fernet) — nunca setar/ler o valor plano
     # diretamente, usar as properties login_plain / senha_plain abaixo.
