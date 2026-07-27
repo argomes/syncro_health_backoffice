@@ -335,8 +335,26 @@ UNFOLD = {
     ],
 }
 
+# LEGADO — Notion foi substituído pelo Zoho Desk (BACFF-AVULSA-07, Notion
+# passou a cobrar pelo limite de 1000 blocos no plano gratuito). Mantido só
+# para não quebrar leitura de tickets antigos que já têm notion_page_id;
+# NotionService não é mais chamado no fluxo de sincronização ativo.
 NOTION_API_KEY = env('NOTION_API_KEY', default='')
 NOTION_DATABASE_ID = env('NOTION_DATABASE_ID', default='')
+
+# Zoho Desk — integração ativa de sincronização de tickets (BACFF-AVULSA-07).
+# Autenticação OAuth2 "self client" server-to-server: client_id/secret +
+# refresh_token de longa duração gerados uma vez no Zoho API Console
+# (console.zoho.com > Self Client), sem fluxo de login de usuário.
+# ZOHO_DESK_ACCOUNTS_URL/API_BASE_URL variam por região da conta Zoho
+# (.com / .eu / .in / .com.au / .jp) — ajustar no .env conforme a conta.
+ZOHO_DESK_CLIENT_ID = env('ZOHO_DESK_CLIENT_ID', default='')
+ZOHO_DESK_CLIENT_SECRET = env('ZOHO_DESK_CLIENT_SECRET', default='')
+ZOHO_DESK_REFRESH_TOKEN = env('ZOHO_DESK_REFRESH_TOKEN', default='')
+ZOHO_DESK_ORG_ID = env('ZOHO_DESK_ORG_ID', default='')
+ZOHO_DESK_DEPARTMENT_ID = env('ZOHO_DESK_DEPARTMENT_ID', default='')
+ZOHO_DESK_ACCOUNTS_URL = env('ZOHO_DESK_ACCOUNTS_URL', default='https://accounts.zoho.com')
+ZOHO_DESK_API_BASE_URL = env('ZOHO_DESK_API_BASE_URL', default='https://desk.zoho.com/api/v1')
 
 # ASAAS Webhook — token configurado no painel ASAAS (Configurações > Notificações)
 ASAAS_WEBHOOK_TOKEN = env('ASAAS_WEBHOOK_TOKEN', default='')

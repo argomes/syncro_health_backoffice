@@ -35,7 +35,7 @@ class TicketAdmin(TenantScopedAdminMixin, BaseAdmin):
     ]
     list_filter = ['status', 'priority', 'created_at', 'clinic']
     search_fields = ['title', 'description', 'clinic__name']
-    readonly_fields = ['created_at', 'updated_at', 'resolved_at', 'notion_page_id']
+    readonly_fields = ['created_at', 'updated_at', 'resolved_at', 'notion_page_id', 'zoho_ticket_id']
     inlines = [TicketMessageInline]
 
     fieldsets = (
@@ -46,7 +46,11 @@ class TicketAdmin(TenantScopedAdminMixin, BaseAdmin):
             'fields': ('status', 'priority', 'assigned_to')
         }),
         ('Integração', {
-            'fields': ('notion_page_id',),
+            'fields': ('zoho_ticket_id', 'notion_page_id'),
+            'description': (
+                'notion_page_id é legado (BACFF-AVULSA-07) — só referência '
+                'histórica de tickets criados antes da migração para Zoho Desk.'
+            ),
             'classes': ('collapse',)
         }),
         ('Auditoria', {

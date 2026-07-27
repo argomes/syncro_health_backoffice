@@ -1,3 +1,15 @@
+"""
+LEGADO (BACFF-AVULSA-07) — NotionService não é mais chamado no fluxo ativo
+de sincronização de tickets. Substituído por support.zoho_service.ZohoDeskService
+porque o Notion vai passar a cobrar (limite de 1000 blocos no plano gratuito).
+
+Mantido aqui, intacto e comentado apenas na chamada real (import ainda
+funciona), como referência histórica — não apagar sem necessidade; não é
+mais exercitado pelos testes de sincronização (ver support/tests_services.py,
+que agora testa ZohoDeskService). Tickets antigos que só têm `notion_page_id`
+continuam legíveis normalmente (campo preservado no model), só não são mais
+escritos nem re-sincronizados.
+"""
 from notion_client import Client
 from django.conf import settings
 from django.utils import timezone
@@ -6,7 +18,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class NotionService:
-    """Service para integração com Notion"""
+    """Service para integração com Notion (LEGADO — ver docstring do módulo)"""
 
     def __init__(self):
         self.client = Client(auth=settings.NOTION_API_KEY)
