@@ -172,6 +172,10 @@ REST_FRAMEWORK = {
         # (dados públicos) — rate acima do default anon, mas ainda contida,
         # para não travar o cache-aside do gateway sob uso legítimo.
         'reference_data': '30/minute',
+        # EDGW-052 (Security Engineer, 2026-07-27): reportar problema é ação
+        # rara e legítima em baixo volume — rate baixa por IP evita flood de
+        # tickets falsos no Zoho Desk via license_key vazada.
+        'error_report': '15/hour',
     },
 }
 

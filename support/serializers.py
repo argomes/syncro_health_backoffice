@@ -78,6 +78,98 @@ class TicketCreateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class ErrorReportCreateSerializer(serializers.Serializer):
+    """
+    Payload do app desktop -> Gateway -> Backoffice (EDGW-052), repassado via
+    POST /error-reports do gateway e autenticado aqui por X-License-Key
+    (mesmo canal de clinics/permissions.py::IsAuthenticatedByLicenseKey).
+
+    Vira um `Ticket` local; o signal `sync_ticket_to_zoho` (BACFF-AVULSA-07)
+    cuida da sincronização assíncrona com o Zoho Desk — não duplicamos essa
+    lógica aqui, só usamos Ticket.objects.create() normalmente.
+    """
+
+    SEVERITY_MAP = {
+        'critico': Ticket.PRIORITY[3][0],   # 'critical'
+        'critica': Ticket.PRIORITY[3][0],
+        'crítico': Ticket.PRIORITY[3][0],
+        'crítica': Ticket.PRIORITY[3][0],
+        'critical': Ticket.PRIORITY[3][0],
+        'alto': Ticket.PRIORITY[2][0],      # 'high'
+        'alta': Ticket.PRIORITY[2][0],
+        'high': Ticket.PRIORITY[2][0],
+        'medio': Ticket.PRIORITY[1][0],     # 'medium'
+        'média': Ticket.PRIORITY[1][0],
+        'medium': Ticket.PRIORITY[1][0],
+        'baixo': Ticket.PRIORITY[0][0],     # 'low'
+        'baixa': Ticket.PRIORITY[0][0],
+        'low': Ticket.PRIORITY[0][0],
+    }
+
+    REPORTER_ROLE_CHOICES = ['recepcao', 'profissional', 'admin']
+
+    category = serializers.CharField(max_length=255)
+    description = serializers.CharField(max_length=8000)
+    severity = serializers.CharField(max_length=20)
+    reporter_role = serializers.ChoiceField(
+        choices=REPORTER_ROLE_CHOICES, required=False, allow_null=True, allow_blank=True
+    )
+    contact_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    contact_email = serializers.EmailField(required=False, allow_blank=True)
+
+    def validate_severity(self, value):
+        key = value.strip().lower()
+        if key not in self.SEVERITY_MAP:
+            raise serializers.ValidationError(
+                f'severity inválida: use uma das seguintes: {sorted(set(self.SEVERITY_MAP))}'
+            )
+        return self.SEVERITY_MAP[key]
+
+    def validate_category(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('category não pode ser vazio.')
+        return value
+
+    def validate_description(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('description não pode ser vazio.')
+        return value
+
+    def create(self, validated_data):
+        clinic = self.context['clinic']
+
+        contact_name = validated_data.get('contact_name', '').strip()
+        contact_email = validated_data.get('contact_email', '').strip()
+        reporter_role = validated_data.get('reporter_role') or ''
+
+        # Metadados de contexto (role/contato) não têm campo dedicado no
+        # model Ticket hoje — anexados como cabeçalho estruturado no início
+        # da descrição em vez de criar migração nova só para isto. A
+        # descrição em si pode conter PHI citada pelo usuário (regra 4.1 do
+        # CLAUDE.md) — nunca é logada, só persistida no Ticket.
+        meta_lines = [f'[Origem: App Desktop] [Categoria: {validated_data["category"]}]']
+        if reporter_role:
+            meta_lines.append(f'[Role: {reporter_role}]')
+        if contact_name:
+            meta_lines.append(f'[Contato: {contact_name}]')
+        if contact_email:
+            meta_lines.append(f'[Email: {contact_email}]')
+
+        full_description = '\n'.join(meta_lines) + '\n\n' + validated_data['description']
+
+        title = f'[Erro Desktop] {validated_data["category"]}'[:255]
+
+        return Ticket.objects.create(
+            clinic=clinic,
+            created_by=None,
+            title=title,
+            description=full_description,
+            priority=validated_data['severity'],
+        )
+
+
 class TicketMessageCreateSerializer(serializers.ModelSerializer):
     """Serializer para adicionar mensagens"""
 
