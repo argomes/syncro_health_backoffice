@@ -8,6 +8,7 @@ eager.
 """
 import json
 import uuid
+from unittest.mock import patch
 
 from django.db.models.signals import post_save
 from django.test import TestCase, override_settings
@@ -136,3 +137,43 @@ class ZohoTicketCommentWebhookTest(TestCase):
     def test_webhook_rejects_get_method(self):
         response = self.client.get('/api/support/webhooks/zoho-comment/')
         self.assertEqual(response.status_code, 405)
+
+    def test_webhook_ticket_id_as_json_number_is_coerced_to_string(self):
+        """
+        Merge fields do Zoho podem serializar `${Ticket.id}` como número JSON
+        em vez de string, dependendo de como o template foi montado no
+        painel. `zoho_ticket_id` é CharField, então o lookup precisa
+        funcionar mesmo com `ticket_id` chegando como int.
+        """
+        self.ticket.zoho_ticket_id = '123'
+        self.ticket.save(update_fields=['zoho_ticket_id'])
+
+        response = self._post_webhook(self._valid_payload(ticket_id=123))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TicketMessage.objects.filter(ticket=self.ticket).count(), 1)
+
+    def test_webhook_rate_limited_returns_429(self):
+        """
+        Acima do limite (`_check_webhook_rate_limit`, reaproveitado do
+        webhook do ASAAS), a requisição é recusada antes mesmo de checar o
+        secret ou tocar no banco — evitando abuso de um endpoint público.
+        """
+        with patch('support.webhook_views._check_webhook_rate_limit', return_value=False):
+            response = self._post_webhook(self._valid_payload())
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(TicketMessage.objects.count(), 0)
+
+    def test_webhook_create_failure_returns_200_and_logs_no_content(self):
+        """
+        Se TicketMessage.objects.create() falhar por qualquer motivo, o
+        endpoint retorna 200 (não 500 — evita página de debug/retry infinito)
+        e não deixa a exceção subir sem tratamento.
+        """
+        with patch('support.webhook_views.TicketMessage.objects.create', side_effect=RuntimeError('db down')):
+            response = self._post_webhook(self._valid_payload())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'error_suppressed')
+        self.assertEqual(TicketMessage.objects.count(), 0)

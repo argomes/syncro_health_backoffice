@@ -154,7 +154,23 @@ def zoho_ticket_comment_webhook(request):
         # retry infinito de um payload que nunca vai ficar válido sozinho.
         return JsonResponse({'status': 'ignored_invalid_payload'}, status=200)
 
-    ticket = Ticket.objects.filter(zoho_ticket_id=zoho_ticket_id).first()
+    # BO-SEC-010 (achado de segurança na revisão de BACFF-AVULSA-10): há uma
+    # UniqueConstraint em nível de banco garantindo zoho_ticket_id único
+    # (fora de string vazia) desde a migração que acompanha esta mudança,
+    # mas checamos count() > 1 aqui como defesa em profundidade — se por
+    # algum motivo (ex.: dado que já existia antes da migração ser aplicada
+    # em produção) houver duplicata, preferimos falhar visivelmente a
+    # escrever silenciosamente na clínica errada (cross-tenant PHI leak).
+    matching_tickets = list(Ticket.objects.filter(zoho_ticket_id=zoho_ticket_id)[:2])
+    if len(matching_tickets) > 1:
+        logger.error(
+            "zoho_ticket_comment_webhook: zoho_ticket_id=%s corresponde a mais de um Ticket local — "
+            "recusando processar para não escrever na clínica errada.",
+            zoho_ticket_id,
+        )
+        return JsonResponse({'status': 'ignored_ambiguous_ticket_id'}, status=200)
+
+    ticket = matching_tickets[0] if matching_tickets else None
     if not ticket:
         logger.warning(
             "zoho_ticket_comment_webhook: nenhum Ticket local com zoho_ticket_id=%s",
@@ -170,7 +186,21 @@ def zoho_ticket_comment_webhook(request):
     # SupportUser local (ex.: Edge Gateway criando ticket) — não criamos um
     # campo `source`/`is_from_support` novo porque o prefixo "[Zoho Desk]"
     # na própria mensagem já resolve a distinção visual sem migração extra.
-    ticket_message = TicketMessage.objects.create(ticket=ticket, author=None, message=message_text)
+    try:
+        ticket_message = TicketMessage.objects.create(ticket=ticket, author=None, message=message_text)
+    except Exception as exc:
+        # Nunca logar `message_text`/`comment` aqui — pode conter PHI citada
+        # pela clínica na resposta. Só o tipo da exceção e IDs. Retorna 200
+        # (não 500) pra não vazar payload/stack trace numa página de debug
+        # do Django caso DEBUG esteja ligado por engano em produção, e pra
+        # não disparar retry infinito do Zoho num erro que reprocessar não resolve.
+        logger.error(
+            "zoho_ticket_comment_webhook: falha ao criar TicketMessage para ticket %s (zoho_ticket_id=%s): %s",
+            ticket.id,
+            zoho_ticket_id,
+            type(exc).__name__,
+        )
+        return JsonResponse({'status': 'error_suppressed'}, status=200)
 
     logger.info(
         "zoho_ticket_comment_webhook: TicketMessage %s criado para ticket local %s (zoho_ticket_id=%s)",
