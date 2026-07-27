@@ -18,7 +18,7 @@ from django.urls import reverse
 from accounts.models import ClinicAccess, SupportUser
 from clinics.models import Clinic, ClinicStatus, Plan
 
-from .models import Ticket, TicketMessage, sync_ticket_to_notion
+from .models import Ticket, TicketMessage, sync_ticket_to_zoho
 
 
 def make_clinic(**overrides):
@@ -44,11 +44,11 @@ def seed_groups():
 class SupportAdminTenantScopingTest(TestCase):
     @classmethod
     def setUpClass(cls):
-        # Desconecta o signal que enfileira sync_ticket_to_notion — sem isso,
+        # Desconecta o signal que enfileira sync_ticket_to_zoho — sem isso,
         # com CELERY_TASK_ALWAYS_EAGER=True (default local quando DEBUG=True),
-        # cada Ticket.objects.create() chama a API real do Notion.
+        # cada Ticket.objects.create() chama a API real do Zoho Desk.
         super().setUpClass()
-        post_save.disconnect(sync_ticket_to_notion, sender=Ticket)
+        post_save.disconnect(sync_ticket_to_zoho, sender=Ticket)
 
     def setUp(self):
         seed_groups()

@@ -62,7 +62,16 @@ class Ticket(models.Model):
     notion_page_id = models.CharField(
         max_length=255,
         blank=True,
-        help_text='UUID da página no Notion (para sincronização)'
+        help_text=(
+            'LEGADO — UUID da página no Notion. Campo mantido só para '
+            'referência histórica de tickets criados antes da migração para '
+            'Zoho Desk (BACFF-AVULSA-07); não é mais escrito nem sincronizado.'
+        )
+    )
+    zoho_ticket_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text='ID do ticket no Zoho Desk (para sincronização)'
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -129,10 +138,17 @@ class TicketMessage(models.Model):
 
 
 @receiver(post_save, sender=Ticket)
-def sync_ticket_to_notion(sender, instance, created, **kwargs):
+def sync_ticket_to_zoho(sender, instance, created, **kwargs):
     """
-    Quando um ticket é criado ou atualizado, enfileira a sincronização com Notion
-    de forma assíncrona via Celery, evitando bloquear a thread HTTP.
+    Quando um ticket é criado ou atualizado, enfileira a sincronização com o
+    Zoho Desk de forma assíncrona via Celery, evitando bloquear a thread HTTP.
+
+    Substitui o antigo sync_ticket_to_notion (BACFF-AVULSA-07 — Notion vai
+    passar a cobrar pelo limite de blocos no plano gratuito). Tickets criados
+    antes da troca e que só têm `notion_page_id` NÃO são retroativamente
+    empurrados para o Zoho aqui — a decisão foi começar limpo, sem migração
+    de histórico; este signal só cria/atualiza via `zoho_ticket_id` a partir
+    de agora.
     """
-    from .tasks import sync_ticket_to_notion as task
+    from .tasks import sync_ticket_to_zoho as task
     task.delay(str(instance.pk))

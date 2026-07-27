@@ -57,6 +57,7 @@ class TicketSerializer(serializers.ModelSerializer):
             'status',
             'priority',
             'notion_page_id',
+            'zoho_ticket_id',
             'created_at',
             'updated_at',
             'resolved_at',

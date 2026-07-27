@@ -8,7 +8,9 @@ from accounts.models import ClinicAccess, SupportUser
 from .models import Ticket, TicketMessage
 from .serializers import TicketSerializer, TicketMessageSerializer, TicketCreateSerializer, TicketMessageCreateSerializer
 from .permissions import IsAuthenticatedByLicenseKeyOrJWT
-from .services import NotionService
+# NotionService não é mais usado aqui (nunca era, na verdade — import morto)
+# nem no fluxo ativo de sync (BACFF-AVULSA-07: Zoho Desk substituiu o
+# Notion). Sincronização acontece via signal em support/models.py.
 
 class TicketViewSet(viewsets.ModelViewSet):
     """Gerencia suporte tickets"""
