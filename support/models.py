@@ -1,8 +1,16 @@
+import re
+
 from django.db import models
 from clinics.models import Clinic
 from accounts.models import SupportUser
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+
+# BACFF-AVULSA-09 — casa o cabeçalho estruturado montado em
+# support/serializers.py::ErrorReportCreateSerializer.create (`[Categoria: ...]`).
+# Mantido aqui, ao lado de `Ticket.category`, para não duplicar o parsing em
+# cada consumidor (ex.: listagem de tickets no portal_gestor).
+_CATEGORY_HEADER_RE = re.compile(r'\[Categoria: (.*?)\]')
 
 
 class Ticket(models.Model):
@@ -138,6 +146,18 @@ class Ticket(models.Model):
     def is_open(self):
         """Verifica se ticket está aberto"""
         return self.status in ['open', 'in_progress']
+
+    @property
+    def category(self):
+        """
+        BACFF-AVULSA-09 — extrai a categoria estruturada embutida no início de
+        `description` por ErrorReportCreateSerializer.create (EDGW-052), sem
+        duplicar a lógica de montagem do cabeçalho (só o parsing inverso).
+        Retorna None para tickets sem esse cabeçalho — criados por outros
+        caminhos (admin, support user, tickets legados pré-EDGW-052).
+        """
+        match = _CATEGORY_HEADER_RE.search(self.description or '')
+        return match.group(1) if match else None
 
 
 class TicketMessage(models.Model):

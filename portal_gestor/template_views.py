@@ -23,6 +23,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from accounts.authentication import PORTAL_ACCESS_COOKIE
 from accounts.portal_serializers import ClinicTokenObtainPairSerializer, ClinicTokenRefreshSerializer
+from support.models import Ticket
 
 from . import report_reads, services
 from .dashboard import HEARTBEAT_STALE_THRESHOLD_MINUTES, get_dashboard_summary
@@ -324,3 +325,56 @@ def _get_own_session_or_404(request, session_id):
         return ReportSession.objects.get(session_id=session_id, clinic=request.clinic)
     except ReportSession.DoesNotExist:
         raise Http404('report_session_not_found')
+
+
+class TicketListView(View):
+    """
+    GET /portal/suporte/ — chamados de suporte abertos pela própria clínica
+    (BACFF-AVULSA-09), incluindo os criados via app desktop (EDGW-052).
+    Sempre `Ticket.objects.filter(clinic=request.clinic)` — nunca aceita
+    filtro de clínica vindo do cliente.
+    """
+
+    def get(self, request):
+        tickets = Ticket.objects.filter(clinic=request.clinic)
+        return render(request, 'portal_gestor/tickets_list.html', {'tickets': tickets})
+
+
+class TicketDetailView(View):
+    """
+    GET /portal/suporte/{id}/ — detalhe do chamado + mensagens sincronizadas
+    (BACFF-AVULSA-10). Só consulta — responder pelo portal é fora de escopo
+    desta task. 404 (não 403) para ticket de outra clínica.
+    """
+
+    def get(self, request, ticket_id):
+        try:
+            ticket = (
+                Ticket.objects.filter(clinic=request.clinic)
+                .prefetch_related('messages')
+                .get(id=ticket_id)
+            )
+        except Ticket.DoesNotExist:
+            raise Http404('ticket_not_found')
+        return render(request, 'portal_gestor/ticket_detail.html', {'ticket': ticket})
+
+
+@method_decorator(csrf_protect, name='dispatch')
+class SupportSettingsView(View):
+    """
+    GET/POST /portal/suporte/configuracoes/ — liga/desliga
+    `Clinic.support_ticket_restricted_to_admin` (EDGW-052/BACFF-AVULSA-09).
+    A sincronização para o gateway já acontece via `get_license_info`
+    (clinics/views.py) — esta view só persiste o campo.
+    """
+
+    template_name = 'portal_gestor/support_settings.html'
+
+    def get(self, request):
+        return render(request, self.template_name, {'clinic': request.clinic})
+
+    def post(self, request):
+        clinic = request.clinic
+        clinic.support_ticket_restricted_to_admin = 'support_ticket_restricted_to_admin' in request.POST
+        clinic.save(update_fields=['support_ticket_restricted_to_admin'])
+        return render(request, self.template_name, {'clinic': clinic, 'saved': True})

@@ -125,12 +125,12 @@
             font-size: 0.75rem;
             font-weight: 500;
         }
-        .badge-green, .badge-ready { background: var(--color-success-50); color: var(--color-success-600); }
-        .badge-yellow, .badge-pending, .badge-key_delivered, .badge-syncing {
+        .badge-green, .badge-ready, .badge-resolved { background: var(--color-success-50); color: var(--color-success-600); }
+        .badge-yellow, .badge-pending, .badge-key_delivered, .badge-syncing, .badge-open, .badge-in_progress {
             background: var(--color-warning-50); color: var(--color-warning-600);
         }
         .badge-red, .badge-expired { background: var(--color-error-50); color: var(--color-error-600); }
-        .badge-gray { background: var(--color-gray-100); color: var(--color-gray-700); }
+        .badge-gray, .badge-closed { background: var(--color-gray-100); color: var(--color-gray-700); }
 
         .report-form label { display: block; font-size: 0.875rem; margin: 0.75rem 0 0.25rem; color: var(--color-gray-700); }
         .report-form input[type="date"] {
@@ -222,6 +222,7 @@
         <nav class="portal-nav">
             <a href="{% url 'portal_home' %}" class="{% if request.resolver_match.url_name == 'portal_home' %}active{% endif %}">Dashboard</a>
             <a href="{% url 'portal_report_new' %}" class="{% if 'report' in request.resolver_match.url_name %}active{% endif %}">Relatórios</a>
+            <a href="{% url 'portal_ticket_list' %}" class="{% if 'ticket' in request.resolver_match.url_name or 'support' in request.resolver_match.url_name %}active{% endif %}">Suporte</a>
         </nav>
     {% endblock %}
     {% include "portal_gestor/_notice_banner.html" %}

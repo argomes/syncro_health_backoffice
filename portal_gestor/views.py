@@ -5,11 +5,18 @@ from rest_framework.views import APIView
 
 from accounts.authentication import ClinicCookieJWTAuthentication, ClinicJWTAuthentication
 from clinics.permissions import IsClinicUser
+from support.models import Ticket
 
 from . import notices, report_reads, services
 from .dashboard import get_dashboard_summary
 from .models import PortalReadAuditLog, ReportSession
-from .serializers import ReportSessionCreateSerializer, ReportSessionSerializer
+from .serializers import (
+    PortalTicketDetailSerializer,
+    PortalTicketListSerializer,
+    ReportSessionCreateSerializer,
+    ReportSessionSerializer,
+    SupportSettingsSerializer,
+)
 
 
 class ReportSessionCreateView(APIView):
@@ -147,6 +154,65 @@ class DashboardSummaryView(APIView):
 
     def get(self, request):
         return Response(get_dashboard_summary(request.user.clinic))
+
+
+class TicketListView(APIView):
+    """
+    GET /portal/api/support/tickets/ — chamados de suporte abertos pela
+    própria clínica (BACFF-AVULSA-09), incluindo os criados via app desktop
+    (EDGW-052). Sempre escopado a `request.user.clinic` — nunca aceita
+    `clinic_id` vindo do cliente (mesmo padrão anti-IDOR de _ReportReadView).
+    """
+
+    authentication_classes = [ClinicCookieJWTAuthentication, ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+
+    def get(self, request):
+        tickets = Ticket.objects.filter(clinic=request.user.clinic)
+        return Response(PortalTicketListSerializer(tickets, many=True).data)
+
+
+class TicketDetailView(APIView):
+    """
+    GET /portal/api/support/tickets/{id}/ — detalhe do chamado + mensagens
+    sincronizadas (BACFF-AVULSA-10). Só consulta — responder pelo portal é
+    fora de escopo desta task. 404 (não 403) para ticket de outra clínica,
+    mesmo cuidado anti-enumeração das outras views deste módulo.
+    """
+
+    authentication_classes = [ClinicCookieJWTAuthentication, ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+
+    def get(self, request, ticket_id):
+        try:
+            ticket = Ticket.objects.filter(clinic=request.user.clinic).prefetch_related('messages').get(id=ticket_id)
+        except Ticket.DoesNotExist:
+            return Response({'error': 'not_found'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(PortalTicketDetailSerializer(ticket).data)
+
+
+class SupportSettingsView(APIView):
+    """
+    GET/PATCH /portal/api/support/settings/ — liga/desliga
+    `Clinic.support_ticket_restricted_to_admin` (EDGW-052), único campo de
+    configuração de suporte editável pelo admin da clínica nesta task. A
+    sincronização para o gateway já acontece via `get_license_info`
+    (clinics/views.py) — esta view só precisa persistir o campo.
+    """
+
+    authentication_classes = [ClinicCookieJWTAuthentication, ClinicJWTAuthentication]
+    permission_classes = [IsClinicUser]
+
+    def get(self, request):
+        return Response(SupportSettingsSerializer(request.user.clinic).data)
+
+    def patch(self, request):
+        clinic = request.user.clinic
+        serializer = SupportSettingsSerializer(clinic, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class NoticeDismissView(APIView):

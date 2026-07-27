@@ -1,0 +1,42 @@
+{% extends "portal_gestor/base.html" %}
+{% block title %}Chamados de Suporte{% endblock %}
+{% block subnav %}
+    <nav class="portal-breadcrumb">
+        <a href="{% url 'portal_home' %}">Dashboard</a>
+        <span class="sep">/</span>
+        <span class="current">Suporte</span>
+    </nav>
+{% endblock %}
+{% block content %}
+    <h1>Chamados de Suporte</h1>
+    <p class="muted">
+        <a href="{% url 'portal_support_settings' %}">Configurações de suporte</a>
+    </p>
+
+    {% if tickets %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Título</th>
+                    <th>Categoria</th>
+                    <th>Prioridade</th>
+                    <th>Status</th>
+                    <th>Aberto em</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ticket in tickets %}
+                    <tr>
+                        <td><a href="{% url 'portal_ticket_detail' ticket.id %}">{{ ticket.title }}</a></td>
+                        <td>{{ ticket.category|default:"—" }}</td>
+                        <td><span class="badge badge-gray">{{ ticket.get_priority_display }}</span></td>
+                        <td><span class="badge badge-{{ ticket.status }}">{{ ticket.get_status_display }}</span></td>
+                        <td>{{ ticket.created_at|date:"d/m/Y H:i" }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">Nenhum chamado de suporte aberto por esta clínica ainda.</p>
+    {% endif %}
+{% endblock %}

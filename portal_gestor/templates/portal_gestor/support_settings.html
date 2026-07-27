@@ -1,0 +1,35 @@
+{% extends "portal_gestor/base.html" %}
+{% block title %}Configurações de Suporte{% endblock %}
+{% block subnav %}
+    <nav class="portal-breadcrumb">
+        <a href="{% url 'portal_home' %}">Dashboard</a>
+        <span class="sep">/</span>
+        <a href="{% url 'portal_ticket_list' %}">Suporte</a>
+        <span class="sep">/</span>
+        <span class="current">Configurações</span>
+    </nav>
+{% endblock %}
+{% block content %}
+    <h1>Configurações de Suporte</h1>
+
+    {% if saved %}
+        <div class="info">Configuração salva.</div>
+    {% endif %}
+
+    <form method="post" class="report-form">
+        {% csrf_token %}
+        <label class="checkbox-label">
+            <input
+                type="checkbox"
+                name="support_ticket_restricted_to_admin"
+                {% if clinic.support_ticket_restricted_to_admin %}checked{% endif %}
+            >
+            Restringir abertura/visualização de chamados de suporte apenas ao admin da clínica
+        </label>
+        <p class="muted">
+            Quando ativado, somente o admin pode abrir chamados de suporte a partir do
+            aplicativo desktop — recepção e profissionais deixam de ver essa opção.
+        </p>
+        <button type="submit" class="button">Salvar</button>
+    </form>
+{% endblock %}
