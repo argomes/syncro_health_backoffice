@@ -38,6 +38,9 @@ class ProvisioningFunctionsTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         result = provision_clinic_database(self.clinic)
 
@@ -68,6 +71,9 @@ class ProvisioningFunctionsTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         provision_clinic_database(self.clinic)
 
@@ -171,6 +177,9 @@ class DDLSanitizationTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         provision_clinic_database(clinic)
 
@@ -220,6 +229,9 @@ class ProvisioningClinicDbTemplateTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         clinic = self._make_clinic('clinica-com-template')
         with self.settings(CLINIC_DB_TEMPLATE='clinic_schema_template'):
@@ -237,6 +249,9 @@ class ProvisioningClinicDbTemplateTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         clinic = self._make_clinic('clinica-sem-template')
         with self.settings(CLINIC_DB_TEMPLATE=''):
@@ -261,6 +276,9 @@ class ProvisioningClinicDbTemplateTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         clinic = self._make_clinic('clinica-grant-owner')
         with self.settings(CLINIC_DB_TEMPLATE='clinic_schema_template'):
@@ -282,6 +300,9 @@ class ProvisioningClinicDbTemplateTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         clinic = self._make_clinic('clinica-sem-grant')
         with self.settings(CLINIC_DB_TEMPLATE=''):
@@ -298,8 +319,64 @@ class ProvisioningClinicDbTemplateTest(TestCase):
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
+        # fetchone() None == usuário/banco ainda não existem — caminho CREATE
+        # (idempotência é coberta à parte em ProvisioningIdempotentTest).
+        mock_cursor.fetchone.return_value = None
 
         clinic = self._make_clinic('clinica-template-invalido')
         with self.settings(CLINIC_DB_TEMPLATE='"; DROP DATABASE postgres; --'):
             with self.assertRaises(RuntimeError):
                 provision_clinic_database(clinic)
+
+
+class ProvisioningIdempotentTest(TestCase):
+    """
+    GATEWAY-AVULSA-13 (CROSS-017.1, 2026-07-23) — reprovisionar uma clínica
+    cujo db_name/db_user já existem no Postgres (ex.: suíte E2E de sync que
+    reseta provisioning_status a cada rodada, sem dropar o Postgres real)
+    não pode falhar com "already exists".
+    """
+
+    @patch('clinics.signals.provision_on_key_received')
+    def setUp(self, mock_signal):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        self.clinic = Clinic.objects.create(
+            name='Clínica Reaproveitada', slug='clinica-reaproveitada',
+            plan=Plan.PROFESSIONAL, status=ClinicStatus.ACTIVE,
+            cnpj='98.765.432/0001-11', public_key_pem=public_pem,
+        )
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_alters_password_instead_of_create_when_user_already_exists(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        # Ambos já existem — simula clínica reaproveitada.
+        mock_cursor.fetchone.return_value = (1,)
+
+        provision_clinic_database(self.clinic)
+
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        self.assertFalse(any('CREATE USER' in c for c in calls))
+        self.assertFalse(any('CREATE DATABASE' in c for c in calls))
+        self.assertTrue(any('ALTER USER' in c and 'PASSWORD' in c for c in calls))
+
+    @patch('clinics.provisioning.psycopg2.connect')
+    def test_creates_when_user_and_database_do_not_exist(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.fetchone.return_value = None
+
+        provision_clinic_database(self.clinic)
+
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        self.assertTrue(any('CREATE USER' in c for c in calls))
+        self.assertTrue(any('CREATE DATABASE' in c for c in calls))
+        self.assertFalse(any('ALTER USER' in c for c in calls))
