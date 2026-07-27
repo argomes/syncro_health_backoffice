@@ -16,6 +16,7 @@ from .serializers import (
     TicketCreateSerializer,
     TicketMessageCreateSerializer,
     ErrorReportCreateSerializer,
+    MyErrorReportSerializer,
 )
 from .permissions import IsAuthenticatedByLicenseKeyOrJWT
 
@@ -141,6 +142,34 @@ def create_error_report(request):
         },
         status=status.HTTP_201_CREATED,
     )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def list_my_error_reports(request):
+    """
+    GET /api/support/error-reports/?reporter_user_id=<sub do JWT>  (EDGW-067)
+
+    Visão "Meus Chamados": cada pessoa (recepção/profissional) vê só os
+    tickets que ELA MESMA abriu a partir do app desktop — nunca o board
+    completo da clínica (isso é BACFF-AVULSA-09, fora de escopo aqui).
+
+    Autenticado por X-License-Key (mesmo canal de create_error_report) —
+    o isolamento por clínica já vem de `request.clinic`; reporter_user_id é
+    um segundo filtro obrigatório para não vazar chamados de outro colega da
+    mesma clínica. Sem esse parâmetro, retorna lista vazia (nunca o board
+    inteiro por omissão).
+    """
+    reporter_user_id = request.query_params.get('reporter_user_id', '').strip()
+    if not reporter_user_id:
+        return Response([])
+
+    tickets = Ticket.objects.filter(
+        clinic=request.clinic,
+        reporter_user_id=reporter_user_id,
+    ).order_by('-created_at')[:100]
+
+    return Response(MyErrorReportSerializer(tickets, many=True).data)
 
 
 class TicketMessageViewSet(viewsets.ModelViewSet):

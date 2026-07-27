@@ -73,6 +73,22 @@ class Ticket(models.Model):
         blank=True,
         help_text='ID do ticket no Zoho Desk (para sincronização)'
     )
+    reporter_user_id = models.CharField(
+        max_length=64,
+        blank=True,
+        db_index=True,
+        help_text=(
+            'EDGW-067 — identificador estável de QUEM abriu o chamado a '
+            'partir do app desktop (o `sub` do JWT local do gateway, escopado '
+            'à clínica). Não é um usuário do Backoffice (não há login de '
+            'usuário aqui para o app desktop, só a clínica via license_key) — '
+            'é opaco, não carrega PII, e serve só para o filtro de "Meus '
+            'Chamados" (cada pessoa vê só os tickets que ela mesma abriu, '
+            'nunca o board completo da clínica — ver views.py::list_my_error_reports). '
+            'Fica em branco em tickets criados por outros caminhos (admin, '
+            'support user).'
+        ),
+    )
     # BACFF-AVULSA-10 / achado de segurança: sem unicidade em nível de banco,
     # nada impede duas linhas (potencialmente de clínicas diferentes) de
     # acabarem com o mesmo zoho_ticket_id — seja por bug futuro no signal
@@ -100,6 +116,7 @@ class Ticket(models.Model):
             models.Index(fields=['clinic', '-created_at']),
             models.Index(fields=['status', '-priority']),
             models.Index(fields=['assigned_to', 'status']),
+            models.Index(fields=['clinic', 'reporter_user_id']),
         ]
         constraints = [
             # Ver comentário no campo zoho_ticket_id acima. Exclui string
