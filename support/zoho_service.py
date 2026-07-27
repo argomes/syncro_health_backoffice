@@ -64,6 +64,31 @@ class ZohoDeskService:
             'Content-Type': 'application/json',
         }
 
+    def _contact_payload(self, ticket):
+        """
+        Monta o campo 'contact' exigido pelo Zoho Desk (contactId é
+        obrigatório na criação de ticket — confirmado por teste real contra
+        a API, INVALID_DATA/contactId missing). A API casa/cria o contato
+        automaticamente a partir de {lastName, email}, sem precisar de um
+        contactId pré-existente.
+
+        Fallback em 3 níveis, pois created_by é opcional (SET_NULL) e
+        clinic.contact_email pode estar em branco: quem criou o ticket ->
+        e-mail de contato da clínica -> e-mail padrão do sistema (nunca
+        deixa a criação falhar por falta de e-mail).
+        """
+        if ticket.created_by and ticket.created_by.email:
+            name = ticket.created_by.get_full_name() or ticket.created_by.username
+            email = ticket.created_by.email
+        elif ticket.clinic.contact_email:
+            name = ticket.clinic.name
+            email = ticket.clinic.contact_email
+        else:
+            name = ticket.clinic.name
+            email = settings.DEFAULT_FROM_EMAIL
+
+        return {'lastName': name, 'email': email}
+
     def create_ticket(self, ticket):
         """Cria ticket no Zoho Desk quando o Ticket local é criado"""
         try:
@@ -73,6 +98,7 @@ class ZohoDeskService:
                 'departmentId': self.department_id,
                 'status': ticket.get_status_display(),
                 'priority': ticket.get_priority_display(),
+                'contact': self._contact_payload(ticket),
                 'cf': {
                     'cf_clinica': ticket.clinic.name,
                 },

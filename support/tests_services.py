@@ -97,6 +97,65 @@ class ZohoDeskServiceTest(TestCase):
         self.assertEqual(mock_post.call_count, 2)
 
     @patch('support.zoho_service.requests.post')
+    def test_create_ticket_contact_uses_created_by(self, mock_post):
+        """
+        contact é obrigatório na API real do Zoho Desk (confirmado por teste
+        manual contra a API: INVALID_DATA/contactId missing sem esse campo).
+        Prioridade 1: e-mail/nome de quem criou o ticket.
+        """
+        self.ticket.created_by = self.user
+        self.ticket.save()
+        self.user.first_name = 'Fulano'
+        self.user.last_name = 'Suporte'
+        self.user.save()
+
+        token_response = self._mock_token_response(mock_post)
+        ticket_response = MagicMock()
+        ticket_response.json.return_value = {'id': 'zoho-ticket-123'}
+        ticket_response.raise_for_status.return_value = None
+        mock_post.side_effect = [token_response, ticket_response]
+
+        ZohoDeskService().create_ticket(self.ticket)
+
+        payload = mock_post.call_args_list[1].kwargs['json']
+        self.assertEqual(payload['contact'], {'lastName': 'Fulano Suporte', 'email': 'test@example.com'})
+
+    @patch('support.zoho_service.requests.post')
+    def test_create_ticket_contact_falls_back_to_clinic_email(self, mock_post):
+        """Prioridade 2: sem created_by, usa o e-mail de contato da clínica."""
+        self.clinic.contact_email = 'contato@clinica-zoho.com.br'
+        self.clinic.save()
+
+        token_response = self._mock_token_response(mock_post)
+        ticket_response = MagicMock()
+        ticket_response.json.return_value = {'id': 'zoho-ticket-123'}
+        ticket_response.raise_for_status.return_value = None
+        mock_post.side_effect = [token_response, ticket_response]
+
+        ZohoDeskService().create_ticket(self.ticket)
+
+        payload = mock_post.call_args_list[1].kwargs['json']
+        self.assertEqual(payload['contact'], {'lastName': self.clinic.name, 'email': 'contato@clinica-zoho.com.br'})
+
+    @patch('support.zoho_service.requests.post')
+    def test_create_ticket_contact_falls_back_to_default_email(self, mock_post):
+        """Prioridade 3: sem created_by nem e-mail da clínica, usa DEFAULT_FROM_EMAIL — nunca falha por falta de e-mail."""
+        self.clinic.contact_email = ''
+        self.clinic.save()
+
+        token_response = self._mock_token_response(mock_post)
+        ticket_response = MagicMock()
+        ticket_response.json.return_value = {'id': 'zoho-ticket-123'}
+        ticket_response.raise_for_status.return_value = None
+        mock_post.side_effect = [token_response, ticket_response]
+
+        with override_settings(DEFAULT_FROM_EMAIL='naoresponda@syncrohealth.com.br'):
+            ZohoDeskService().create_ticket(self.ticket)
+
+        payload = mock_post.call_args_list[1].kwargs['json']
+        self.assertEqual(payload['contact'], {'lastName': self.clinic.name, 'email': 'naoresponda@syncrohealth.com.br'})
+
+    @patch('support.zoho_service.requests.post')
     def test_create_ticket_error_handling(self, mock_post):
         """Erro ao criar ticket no Zoho Desk não propaga exceção"""
         token_response = self._mock_token_response(mock_post)
