@@ -356,6 +356,17 @@ ZOHO_DESK_DEPARTMENT_ID = env('ZOHO_DESK_DEPARTMENT_ID', default='')
 ZOHO_DESK_ACCOUNTS_URL = env('ZOHO_DESK_ACCOUNTS_URL', default='https://accounts.zoho.com')
 ZOHO_DESK_API_BASE_URL = env('ZOHO_DESK_API_BASE_URL', default='https://desk.zoho.com/api/v1')
 
+# Zoho Desk Webhook (BACFF-AVULSA-10) — caminho de VOLTA (Zoho -> Backoffice).
+# A sincronização acima (create_ticket/update_ticket/add_comment) só empurra
+# updates DO Backoffice PRO Zoho. Quando o time de suporte responde direto
+# no painel do Zoho Desk, isso nunca chegava de volta aqui — o admin da
+# clínica veria o ticket "aberto pra sempre" sem a resposta. Este token
+# autentica o webhook configurado manualmente em Setup > Automation >
+# Webhooks no painel Zoho Desk, evento "Add Comment" (ticket_comment.add),
+# apontando pra /api/support/webhooks/zoho-comment/. Ver
+# support/webhook_views.py para o corpo (JSON) esperado com os merge fields.
+ZOHO_DESK_WEBHOOK_SECRET = env('ZOHO_DESK_WEBHOOK_SECRET', default='')
+
 # ASAAS Webhook — token configurado no painel ASAAS (Configurações > Notificações)
 ASAAS_WEBHOOK_TOKEN = env('ASAAS_WEBHOOK_TOKEN', default='')
 

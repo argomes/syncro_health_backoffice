@@ -73,6 +73,15 @@ class Ticket(models.Model):
         blank=True,
         help_text='ID do ticket no Zoho Desk (para sincronização)'
     )
+    # BACFF-AVULSA-10 / achado de segurança: sem unicidade em nível de banco,
+    # nada impede duas linhas (potencialmente de clínicas diferentes) de
+    # acabarem com o mesmo zoho_ticket_id — seja por bug futuro no signal
+    # sync_ticket_to_zoho, seja por reprocessamento de dado. O webhook de
+    # VOLTA (support/webhook_views.py) localiza o Ticket só por esse campo;
+    # sem a constraint, uma colisão faria um comentário do Zoho vazar pra
+    # thread de ticket da clínica errada (cross-tenant PHI leak). Constraint
+    # condicional (não se aplica a string vazia) porque tickets legados
+    # criados antes do Zoho Desk (BACFF-AVULSA-07) ficam com o campo em branco.
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -91,6 +100,15 @@ class Ticket(models.Model):
             models.Index(fields=['clinic', '-created_at']),
             models.Index(fields=['status', '-priority']),
             models.Index(fields=['assigned_to', 'status']),
+        ]
+        constraints = [
+            # Ver comentário no campo zoho_ticket_id acima. Exclui string
+            # vazia da constraint para não quebrar tickets legados/sem sync.
+            models.UniqueConstraint(
+                fields=['zoho_ticket_id'],
+                condition=~models.Q(zoho_ticket_id=''),
+                name='unique_non_empty_zoho_ticket_id',
+            ),
         ]
         permissions = [
             ('can_assign_ticket', 'Pode atribuir tickets a membros'),
