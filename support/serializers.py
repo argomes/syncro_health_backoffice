@@ -114,6 +114,10 @@ class ErrorReportCreateSerializer(serializers.Serializer):
     reporter_role = serializers.ChoiceField(
         choices=REPORTER_ROLE_CHOICES, required=False, allow_null=True, allow_blank=True
     )
+    reporter_user_id = serializers.CharField(
+        max_length=64, required=False, allow_blank=True,
+        help_text='EDGW-067 — identificador estável (sub do JWT local) de quem abriu o chamado.',
+    )
     contact_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
     contact_email = serializers.EmailField(required=False, allow_blank=True)
 
@@ -167,7 +171,23 @@ class ErrorReportCreateSerializer(serializers.Serializer):
             title=title,
             description=full_description,
             priority=validated_data['severity'],
+            reporter_user_id=validated_data.get('reporter_user_id', '').strip(),
         )
+
+
+class MyErrorReportSerializer(serializers.ModelSerializer):
+    """
+    Listagem "Meus Chamados" (EDGW-067) — enxuta de propósito: v1 não exibe
+    o conteúdo da conversa (mensagens sincronizadas do Zoho via
+    BACFF-AVULSA-10 ficam fora de escopo aqui), só o suficiente para quem
+    abriu o chamado saber status/prioridade/data. Nunca inclui `description`
+    (pode conter PHI citada livremente pelo usuário no app desktop).
+    """
+
+    class Meta:
+        model = Ticket
+        fields = ['id', 'title', 'status', 'priority', 'created_at', 'resolved_at']
+        read_only_fields = fields
 
 
 class TicketMessageCreateSerializer(serializers.ModelSerializer):
