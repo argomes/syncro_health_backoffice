@@ -29,6 +29,9 @@ from portal_gestor.template_views import (
     ReportResultsView,
     ReportStatusFragmentView,
     ReportStatusView,
+    SupportSettingsView,
+    TicketDetailView,
+    TicketListView,
 )
 
 class ThrottledTokenObtainPairView(TokenObtainPairView):
@@ -121,6 +124,11 @@ urlpatterns = [
     path('portal/relatorios/<uuid:session_id>/', ReportStatusView.as_view(), name='portal_report_status'),
     path('portal/relatorios/<uuid:session_id>/status/fragment/', ReportStatusFragmentView.as_view(), name='portal_report_status_fragment'),
     path('portal/relatorios/<uuid:session_id>/resultados/', ReportResultsView.as_view(), name='portal_report_results'),
+
+    # portal_gestor — chamados de suporte (BACFF-AVULSA-09).
+    path('portal/suporte/', TicketListView.as_view(), name='portal_ticket_list'),
+    path('portal/suporte/configuracoes/', SupportSettingsView.as_view(), name='portal_support_settings'),
+    path('portal/suporte/<int:ticket_id>/', TicketDetailView.as_view(), name='portal_ticket_detail'),
 
     # TASK-BO-12 — "esqueci minha senha" pra ClinicUser (gestor da clínica no
     # Portal Gestor). ClinicUser não é AUTH_USER_MODEL — ver
