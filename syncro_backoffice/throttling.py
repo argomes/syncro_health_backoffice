@@ -27,6 +27,16 @@ class DbAccessGrantRateThrottle(AnonRateThrottle):
     scope = 'db_access_grant'
 
 
+class ErrorReportRateThrottle(AnonRateThrottle):
+    # EDGW-052 (achado de segurança na revisão, 2026-07-27): mesmo padrão de
+    # falha já documentado em DbAccessGrantRateThrottle — IsAuthenticatedByLicenseKey
+    # é permission, não authentication, então sem scope dedicado o endpoint
+    # herdava só o AnonRateThrottle default (60/min por IP). Uma license_key
+    # vazada poderia inundar o Zoho Desk de tickets falsos. Rate baixa porque
+    # reportar problema é ação rara e legítima em volume baixo.
+    scope = 'error_report'
+
+
 class ReferenceDataRateThrottle(AnonRateThrottle):
     # BACFF-AVULSA-03 (correção 2026-07-20): os 4 endpoints de referência
     # TUSS/ANS (procedure_code_lookup, insurance_operator_lookup,

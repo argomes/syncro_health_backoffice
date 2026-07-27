@@ -63,6 +63,18 @@ class Clinic(models.Model):
         help_text='Marca quando o job de reajuste de 12 meses já processou esta clínica (evita reajuste duplicado).'
     )
 
+    # EDGW-052: pré-requisito de BACFF-AVULSA-09 (tela de configuração ainda
+    # não implementada) — quando True, só admin da clínica pode ver/criar
+    # tickets de suporte (hoje qualquer role no desktop pode reportar erro
+    # via POST /api/support/error-reports/). Persistido e exposto em
+    # get_license_info (clinics/views.py) — mesmo canal já usado por
+    # `active_modules` para chegar ao gateway — mas a checagem de RBAC em si
+    # é escopo de outra task.
+    support_ticket_restricted_to_admin = models.BooleanField(
+        default=False,
+        help_text='Restringe criação/visualização de tickets de suporte ao admin da clínica (BACFF-AVULSA-09).'
+    )
+
     # Chave pública RSA enviada pelo app desktop no registro
     # Usada para criptografar credenciais do banco — backoffice nunca vê a senha em claro
     public_key_pem = models.TextField(blank=True)

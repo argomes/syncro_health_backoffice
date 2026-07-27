@@ -240,6 +240,10 @@ def get_license_info(request):
         'status': clinic.status,
         'plan': clinic.plan,
         'active_modules': clinic.active_modules,
-        'license_expires_at': clinic.license_expires_at.isoformat() if clinic.license_expires_at else None
+        'license_expires_at': clinic.license_expires_at.isoformat() if clinic.license_expires_at else None,
+        # EDGW-052/BACFF-AVULSA-09: mesmo canal já usado por active_modules
+        # para chegar ao gateway/desktop; a flag em si só é lida por outra
+        # task (checagem de RBAC no fluxo de tickets ainda não existe).
+        'support_ticket_restricted_to_admin': clinic.support_ticket_restricted_to_admin,
     }, status=status.HTTP_200_OK)
 

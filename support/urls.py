@@ -1,6 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import TicketViewSet, TicketMessageViewSet
+from .views import TicketViewSet, TicketMessageViewSet, create_error_report
 from .webhook_views import zoho_ticket_comment_webhook
 
 router = DefaultRouter()
@@ -11,4 +11,7 @@ urlpatterns = [
     # BACFF-AVULSA-10 — webhook de VOLTA (Zoho Desk -> Backoffice), ver
     # support/webhook_views.py para autenticação e formato do payload.
     path('webhooks/zoho-comment/', zoho_ticket_comment_webhook, name='zoho_ticket_comment_webhook'),
+    # EDGW-052 — gateway repassa POST /error-reports do app desktop pra cá,
+    # autenticado por X-License-Key.
+    path('error-reports/', create_error_report, name='create_error_report'),
 ] + router.urls
