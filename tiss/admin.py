@@ -15,8 +15,8 @@ class TISSOperatorConfigAdmin(TenantScopedAdminMixin, BaseAdmin):
     # login_encrypted/senha_encrypted NUNCA aparecem em list_display nem em
     # fields — só existem como TextField cifrado, não editável no admin
     # (edição é via os campos write-only `login`/`senha` do serializer da API).
-    list_display = ('nome_operadora', 'registro_ans', 'clinic', 'ativo', 'created_at')
-    list_filter = ('ativo',)
+    list_display = ('nome_operadora', 'registro_ans', 'clinic', 'gateway_provider', 'ativo', 'created_at')
+    list_filter = ('ativo', 'gateway_provider')
     search_fields = ('nome_operadora', 'registro_ans', 'clinic__name')
     readonly_fields = ('id', 'created_at', 'updated_at')
     exclude = ('login_encrypted', 'senha_encrypted')
