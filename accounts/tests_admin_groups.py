@@ -189,3 +189,53 @@ class AdminSidebarNavigationTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, 'Gateways')
         self.assertNotContains(response, 'Usuários & Permissões')
+
+
+class AdminSidebarReorgTest(TestCase):
+    """
+    ADMIN-DASHBOARD-REDESIGN — reorganização em 5 grupos (Principal /
+    Administrar / Operações / Configurações / Sistema). Prova que os itens
+    novos (antes órfãos, só alcançáveis por URL direta) agora aparecem no
+    menu pro superuser, e que todo reverse_lazy do sidebar resolve — o bug
+    do UNFOLD["TABS"] apontando pra "clinicas.clinica" (app/model
+    inexistente) existiu por meses justamente por faltar um teste destes.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.superuser = SupportUser.objects.create_superuser(
+            username='root-sidebar', email='root-sidebar@syncro.test', password='senha-teste-123',
+        )
+        self.client.force_login(self.superuser)
+
+    def test_all_sidebar_links_resolve(self):
+        from django.conf import settings
+
+        for group in settings.UNFOLD['SIDEBAR']['navigation']:
+            for item in group['items']:
+                # Links são reverse_lazy — força a resolução; se algum
+                # reverse_lazy tivesse app_label/model errado (como o TABS
+                # morto tinha), isso já teria levantado NoReverseMatch na
+                # hora de montar o settings.py, mas o teste também garante
+                # que o link vira uma URL de verdade, não um placeholder.
+                self.assertTrue(str(item['link']).startswith('/'))
+
+    def test_superuser_sees_previously_orphaned_items(self):
+        response = self.client.get(reverse('admin:index'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Usuários do cliente')
+        self.assertContains(response, 'Faturas')
+        self.assertContains(response, 'Planos')
+        self.assertContains(response, 'Feriados')
+        self.assertContains(response, 'Operadoras ANS')
+        self.assertContains(response, 'Credenciais de operadora')
+        self.assertContains(response, 'Tabela TUSS')
+        self.assertContains(response, 'Municípios (IBGE)')
+        self.assertContains(response, 'Auditoria de leitura (LGPD)')
+        self.assertContains(response, 'Acessos de suporte')
+        self.assertContains(response, 'Avisos de produto')
+
+    def test_dead_tabs_config_removed(self):
+        from django.conf import settings
+
+        self.assertNotIn('TABS', settings.UNFOLD)
