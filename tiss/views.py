@@ -80,9 +80,13 @@ class TISSLoteViewSet(viewsets.ModelViewSet):
         try:
             lote = enviar_lote(lote, mock_scenario=mock_scenario)
         except TISSServiceError as exc:
+            # BACFF-AVULSA-12: 409 (não 422/404) para "cadastrada e
+            # desligada" — o gateway precisa distinguir esse caso de erro
+            # de validação/negócio comum.
+            http_status = status.HTTP_409_CONFLICT if exc.code == 'operadora_desativada' else status.HTTP_422_UNPROCESSABLE_ENTITY
             return Response(
                 {'error': exc.code, 'detail': str(exc)},
-                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status=http_status,
             )
         return Response(TISSLoteSerializer(lote).data)
 
@@ -215,14 +219,22 @@ def verificar_elegibilidade(request):
     except TISSOperatorConfig.DoesNotExist:
         return Response({'error': 'operadora_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    resultado = consultar_elegibilidade_automatica(
-        clinic=clinic,
-        operator_config=operator_config,
-        numero_carteira=numero_carteira,
-        beneficiario_nome=data.get('beneficiario_nome', ''),
-        appointment_id=data.get('appointment_id', ''),
-        mock_scenario=data.get('mock_scenario', 'success'),
-    )
+    try:
+        resultado = consultar_elegibilidade_automatica(
+            clinic=clinic,
+            operator_config=operator_config,
+            numero_carteira=numero_carteira,
+            beneficiario_nome=data.get('beneficiario_nome', ''),
+            appointment_id=data.get('appointment_id', ''),
+            mock_scenario=data.get('mock_scenario', 'success'),
+        )
+    except TISSServiceError as exc:
+        # BACFF-AVULSA-12: 409 (não 404) — a operadora existe cadastrada,
+        # só está desligada; o gateway precisa distinguir isso de
+        # "operadora_nao_encontrada" para mostrar a mensagem certa na
+        # recepção.
+        http_status = status.HTTP_409_CONFLICT if exc.code == 'operadora_desativada' else status.HTTP_422_UNPROCESSABLE_ENTITY
+        return Response({'error': exc.code, 'detail': str(exc)}, status=http_status)
     return Response(ElegibilidadeRespostaCompletaSerializer(resultado).data, status=status.HTTP_201_CREATED)
 
 

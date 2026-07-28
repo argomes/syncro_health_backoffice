@@ -110,6 +110,46 @@ class ConsultarElegibilidadeAutomaticaServiceTests(TestCase):
         self.assertEqual(TISSElegibilidadeConsulta.objects.filter(clinic=self.clinic).count(), 2)
 
 
+@override_settings(TISS_SOAP_MOCK=True)
+class ConsultarElegibilidadeOperadoraDesativadaTests(TestCase):
+    """
+    BACFF-AVULSA-12 (issue #45): `ativo` precisa ser checado ANTES de
+    qualquer I/O de rede também no caminho de elegibilidade — mesmo bug do
+    envio de lote, mesmo fix.
+    """
+
+    def setUp(self):
+        self.clinic = make_clinic()
+        self.op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Orizon', registro_ans='123456',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+        )
+
+    def test_operadora_ativa_prossegue_sem_regressao(self):
+        consulta = consultar_elegibilidade_automatica(
+            clinic=self.clinic, operator_config=self.op, numero_carteira='CARTEIRA-ATIVA',
+            mock_scenario='success',
+        )
+        self.assertTrue(consulta.elegivel)
+
+    @patch('tiss.services.soap_verificar_elegibilidade')
+    def test_operadora_inativa_bloqueia_antes_de_qualquer_io_de_rede(self, mock_soap_verificar):
+        self.op.ativo = False
+        self.op.save(update_fields=['ativo'])
+
+        with self.assertRaises(TISSServiceError) as ctx:
+            consultar_elegibilidade_automatica(
+                clinic=self.clinic, operator_config=self.op, numero_carteira='CARTEIRA-INATIVA',
+                mock_scenario='success',
+            )
+
+        self.assertEqual(ctx.exception.code, 'operadora_desativada')
+        mock_soap_verificar.assert_not_called()
+        # Nenhum log operacional deve ter sido criado — o bloqueio acontece
+        # antes de qualquer tentativa de consulta.
+        self.assertEqual(TISSElegibilidadeConsulta.objects.filter(clinic=self.clinic).count(), 0)
+
+
 class RegistrarElegibilidadeManualServiceTests(TestCase):
     def setUp(self):
         self.clinic = make_clinic()
@@ -125,6 +165,23 @@ class RegistrarElegibilidadeManualServiceTests(TestCase):
         )
         self.assertEqual(consulta.origem, TISSElegibilidadeOrigem.MANUAL)
         self.assertEqual(consulta.numero_guia_operadora, 'GUIA-MANUAL-001')
+
+    def test_registro_manual_continua_funcionando_com_operadora_desativada(self):
+        """
+        BACFF-AVULSA-12: desativar a operadora não deve bloquear o registro
+        manual — ele não faz I/O de rede com a operadora, é a recepcionista
+        registrando o que já obteve por telefone/portal. Decisão de escopo
+        do hotfix: desativar a integração automática não pode travar o
+        trabalho manual da recepção.
+        """
+        self.op.ativo = False
+        self.op.save(update_fields=['ativo'])
+
+        consulta = registrar_elegibilidade_manual(
+            clinic=self.clinic, operator_config=self.op, numero_carteira='CARTEIRA-MANUAL-INATIVA',
+            numero_guia_operadora='GUIA-MANUAL-002', elegivel=True,
+        )
+        self.assertEqual(consulta.origem, TISSElegibilidadeOrigem.MANUAL)
 
     def test_registro_manual_sem_numero_guia_levanta_erro(self):
         """

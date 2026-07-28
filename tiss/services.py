@@ -38,6 +38,29 @@ class TISSServiceError(Exception):
         super().__init__(message or code)
 
 
+def _checar_operadora_ativa(operator_config) -> None:
+    """
+    BACFF-AVULSA-12: `TISSOperatorConfig.ativo` precisa ser consultado ANTES
+    de qualquer I/O de rede com a operadora. Até esta correção, o campo
+    existia no model (e tinha até índice `(clinic, ativo)`) mas nenhum
+    ponto de despacho o lia — desativar uma operadora no admin não parava
+    nenhuma chamada real.
+
+    Chamado no topo de todo caminho que fala SOAP com a operadora
+    (elegibilidade automática, envio de lote). NÃO chamado por
+    `registrar_elegibilidade_manual` — o registro manual não faz I/O de
+    rede com a operadora (a recepcionista já obteve a informação por
+    telefone/portal), e deve continuar funcionando mesmo com a operadora
+    desativada: desativar a integração automática não deveria travar o
+    trabalho manual da recepção.
+    """
+    if not operator_config.ativo:
+        raise TISSServiceError(
+            'operadora_desativada',
+            f'Operadora {operator_config.registro_ans} está desativada para esta clínica',
+        )
+
+
 def criar_lote(clinic, operator_config, competencia: str) -> TISSLote:
     """
     Cria um TISSLote com numeroLote sequencial por (clínica, operadora).
@@ -65,6 +88,8 @@ def enviar_lote(lote: TISSLote, guia_ids: list = None, mock_scenario: str = 'suc
     de `lote.guias` ou de `TISSGuia.objects.filter(clinic=lote.clinic, ...)`
     — nunca de outra clínica).
     """
+    _checar_operadora_ativa(lote.operator_config)
+
     guias = list(lote.guias.all()) if guia_ids is None else list(
         TISSGuia.objects.filter(clinic=lote.clinic, id__in=guia_ids)
     )
@@ -111,6 +136,28 @@ def enviar_lote(lote: TISSLote, guia_ids: list = None, mock_scenario: str = 'suc
 
     lote.status = TISSLoteStatus.ENVIANDO
     lote.save(update_fields=['status', 'updated_at'])
+
+    # BACFF-AVULSA-13: mesmo mecanismo de resolução por `gateway_provider`
+    # já usado em `consultar_elegibilidade_automatica` — antes desta
+    # correção, `enviar_lote` chamava `soap_enviar_lote` (client genérico
+    # ANS) incondicionalmente, mesmo para clínicas configuradas com Orizon,
+    # mandando o lote para o endpoint errado silenciosamente. A Orizon
+    # ainda não tem client de envio de lote próprio implementado (Fature —
+    # BACFF-014, P0 em separado); em vez de mandar o payload no dialeto
+    # errado para uma operadora real (o que gera glosa e retrabalho de
+    # faturamento), falhamos alto e explicitamente até o client Fature
+    # existir. Nunca fazer fallback silencioso para o genérico.
+    if lote.operator_config.gateway_provider != TISSGatewayProvider.GENERICO_ANS:
+        lote.status = TISSLoteStatus.ERRO_ENVIO
+        lote.erro_mensagem = (
+            f'provider_lote_nao_implementado: envio de lote para '
+            f'gateway_provider={lote.operator_config.gateway_provider} ainda não tem client próprio'
+        )
+        lote.save(update_fields=['status', 'erro_mensagem', 'updated_at'])
+        raise TISSServiceError(
+            'provider_lote_nao_implementado',
+            f'Envio de lote não implementado para o provider "{lote.operator_config.gateway_provider}"',
+        )
 
     try:
         resultado = soap_enviar_lote(
@@ -235,6 +282,8 @@ def consultar_elegibilidade_automatica(
     central. Quem precisa do histórico completo persiste localmente (Edge
     Gateway).
     """
+    _checar_operadora_ativa(operator_config)
+
     if operator_config.gateway_provider == TISSGatewayProvider.ORIZON:
         return _consultar_elegibilidade_orizon(
             clinic, operator_config, numero_carteira, beneficiario_nome, appointment_id, mock_scenario,
