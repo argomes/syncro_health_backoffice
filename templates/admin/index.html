@@ -1,0 +1,56 @@
+{% extends 'admin/base.html' %}
+
+{% load i18n %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+    {% include "unfold/helpers/site_branding.html" %}
+{% endblock %}
+
+{% block content %}
+    {% if dashboard_cards %}
+    <div class="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-3">
+        {% if perms.clinics.view_clinic %}
+        <a href="{% url 'admin:clinics_clinic_changelist' %}?status__exact=active"
+           class="block p-4 border rounded-md shadow-sm border-base-200 dark:border-base-800 bg-white dark:bg-base-900">
+            <div class="text-xs font-semibold uppercase text-base-500">Clientes</div>
+            <div class="mt-1 text-2xl font-semibold text-base-900 dark:text-base-100">
+                {{ dashboard_cards.clinics.active }} ativos
+            </div>
+            <div class="text-sm text-base-500">{{ dashboard_cards.clinics.inactive }} inativos/suspensos</div>
+        </a>
+        {% endif %}
+
+        {% if perms.metrics.view_systemheartbeat %}
+        <a href="{% url 'admin:metrics_systemheartbeat_changelist' %}"
+           class="block p-4 border rounded-md shadow-sm border-base-200 dark:border-base-800 bg-white dark:bg-base-900">
+            <div class="text-xs font-semibold uppercase text-base-500">Gateways</div>
+            <div class="mt-1 text-2xl font-semibold text-base-900 dark:text-base-100">
+                {{ dashboard_cards.gateways.online }}/{{ dashboard_cards.gateways.total }} online
+            </div>
+            <div class="text-sm text-base-500">último heartbeat &lt; 30 min</div>
+        </a>
+        {% endif %}
+
+        {% if perms.metrics.view_systemlog %}
+        <a href="{% url 'admin:metrics_systemlog_changelist' %}?level__exact=error"
+           class="block p-4 border rounded-md shadow-sm border-base-200 dark:border-base-800 bg-white dark:bg-base-900">
+            <div class="text-xs font-semibold uppercase text-base-500">Erros (24h)</div>
+            <div class="mt-1 text-2xl font-semibold text-base-900 dark:text-base-100">
+                {{ dashboard_cards.errors.count }}
+            </div>
+            <div class="text-sm text-base-500">logs nível ERROR</div>
+        </a>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="flex flex-col lg:flex-row lg:gap-8">
+        <div class="grow">
+            {% include "unfold/helpers/app_list_default.html" %}
+        </div>
+
+        {% include "unfold/helpers/history.html" %}
+    </div>
+{% endblock %}

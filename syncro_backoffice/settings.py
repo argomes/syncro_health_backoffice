@@ -86,7 +86,13 @@ ROOT_URLCONF = 'syncro_backoffice.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        # DIRS (filesystem loader) é consultado antes do app_directories
+        # loader, então templates/admin/index.html aqui sobrescreve com
+        # segurança o template do Unfold sem risco de recursão em
+        # {% extends %} — o Unfold estende 'admin/base.html', não a si
+        # mesmo, então nosso override também pode estender 'admin/base.html'
+        # diretamente.
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -235,43 +241,76 @@ UNFOLD = {
             "500": "#0ea5e9",
             "600": "#0284c7",
             "700": "#0369a1",
-            "900": "#082f49",   
+            "900": "#082f49",
         },
     },
-    # TASK-057: busca geral (Cmd+K) cobrindo os models que um analista/admin
-    # mais procura no dia a dia — clínica por nome/slug, gateway por clínica,
-    # ticket de suporte.
+    # ADMIN-DASHBOARD-REDESIGN (2026-07): substitui a index padrão do
+    # Django admin (que com show_all_applications=False fica praticamente
+    # vazia) pelos cards de "Dashboard de Serviços" com dado real já
+    # existente (clientes ativos/inativos, gateways online, erros 24h).
+    # Ver syncro_backoffice/dashboard.py e .claude/tasks/ADMIN-DASHBOARD-REDESIGN.md.
+    "DASHBOARD_CALLBACK": "syncro_backoffice.dashboard.dashboard_callback",
+    # TASK-057 + ADMIN-DASHBOARD-REDESIGN: busca geral (Cmd+K) cobrindo os
+    # models que um analista/admin mais procura no dia a dia.
     "COMMAND": {
         "search_models": [
             "clinics.Clinic",
             "metrics.SystemHeartbeat",
             "support.Ticket",
+            "billing.Invoice",
+            "accounts.ClinicUser",
         ],
     },
     "SIDEBAR": {
         "show_search": True,
         "show_all_applications": False,
-        # TASK-057: substitui a lista crua de apps/models pelo agrupamento
-        # operacional definido no PO (Principal/Operações/Sistema). Cada item
-        # usa `permission` checando os grupos da TASK-056 — um usuário sem a
-        # permissão correspondente simplesmente não vê o item (Unfold já trata
-        # isso, não precisa de lógica extra aqui).
+        # ADMIN-DASHBOARD-REDESIGN (2026-07): reorganização em 5 grupos —
+        # o menu tinha só 8 links pra 20 ModelAdmins registrados; os outros
+        # 12 existiam só por URL direta (nenhum humano os encontrava pelo
+        # menu). Ver .claude/tasks/ADMIN-DASHBOARD-REDESIGN.md §3 pra
+        # inventário completo e racional de cada grupo. Cada item usa
+        # `permission` — o Unfold já esconde item sem permissão, não precisa
+        # de lógica extra aqui.
         "navigation": [
             {
                 "title": "Principal",
                 "separator": True,
                 "items": [
                     {
-                        "title": "Dashboard",
+                        "title": "Dashboard de Serviços",
                         "icon": "dashboard",
                         "link": reverse_lazy("admin:index"),
                         "permission": lambda request: request.user.is_staff,
                     },
+                ],
+            },
+            {
+                "title": "Administrar",
+                "separator": True,
+                "items": [
                     {
-                        "title": "Clínicas",
+                        "title": "Clientes",
                         "icon": "business",
                         "link": reverse_lazy("admin:clinics_clinic_changelist"),
                         "permission": lambda request: request.user.has_perm("clinics.view_clinic"),
+                    },
+                    {
+                        "title": "Usuários do cliente",
+                        "icon": "group",
+                        "link": reverse_lazy("admin:accounts_clinicuser_changelist"),
+                        "permission": lambda request: request.user.has_perm("accounts.view_clinicuser"),
+                    },
+                    {
+                        "title": "Faturas",
+                        "icon": "receipt_long",
+                        "link": reverse_lazy("admin:billing_invoice_changelist"),
+                        "permission": lambda request: request.user.has_perm("billing.view_invoice"),
+                    },
+                    {
+                        "title": "Planos",
+                        "icon": "sell",
+                        "link": reverse_lazy("admin:billing_plan_changelist"),
+                        "permission": lambda request: request.user.has_perm("billing.view_plan"),
                     },
                 ],
             },
@@ -286,14 +325,86 @@ UNFOLD = {
                         "permission": lambda request: request.user.has_perm("metrics.view_systemheartbeat"),
                     },
                     {
-                        "title": "Relatórios",
+                        "title": "TISS · Lotes",
+                        "icon": "folder_zip",
+                        "link": reverse_lazy("admin:tiss_tisslote_changelist"),
+                        "permission": lambda request: request.user.has_perm("tiss.view_tisslote"),
+                    },
+                    {
+                        "title": "TISS · Guias",
                         "icon": "description",
+                        "link": reverse_lazy("admin:tiss_tissguia_changelist"),
+                        "permission": lambda request: request.user.has_perm("tiss.view_tissguia"),
+                    },
+                    {
+                        "title": "TISS · Glosas",
+                        "icon": "rule",
+                        "link": reverse_lazy("admin:tiss_tissglosa_changelist"),
+                        "permission": lambda request: request.user.has_perm("tiss.view_tissglosa"),
+                    },
+                    {
+                        "title": "Elegibilidade",
+                        "icon": "verified",
+                        "link": reverse_lazy("admin:tiss_tisselegibilidadeconsulta_changelist"),
+                        "permission": lambda request: request.user.has_perm("tiss.view_tisselegibilidadeconsulta"),
+                    },
+                    {
+                        "title": "Relatórios",
+                        "icon": "bar_chart",
                         "link": reverse_lazy("admin:portal_gestor_reportsession_changelist"),
                         "permission": lambda request: request.user.has_perm("portal_gestor.view_reportsession"),
                     },
-                    # "Assinaturas" (ASAAS) e "Backups" entram aqui quando essas
-                    # integrações existirem — sem model/tela ainda, não vale
-                    # colocar um link morto no menu.
+                    {
+                        "title": "Suporte",
+                        "icon": "support_agent",
+                        "link": reverse_lazy("admin:support_ticket_changelist"),
+                        "permission": lambda request: request.user.has_perm("support.view_ticket"),
+                    },
+                    {
+                        "title": "Avisos de produto",
+                        "icon": "campaign",
+                        "link": reverse_lazy("admin:portal_gestor_productnotice_changelist"),
+                        "permission": lambda request: request.user.has_perm("portal_gestor.view_productnotice"),
+                    },
+                ],
+            },
+            {
+                "title": "Configurações",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Feriados",
+                        "icon": "event",
+                        "link": reverse_lazy("admin:holidays_feriado_changelist"),
+                        "permission": lambda request: request.user.has_perm("holidays.view_feriado"),
+                    },
+                    {
+                        "title": "Operadoras ANS",
+                        "icon": "corporate_fare",
+                        "link": reverse_lazy("admin:tiss_ansinsuranceoperator_changelist"),
+                        "permission": lambda request: request.user.has_perm("tiss.view_ansinsuranceoperator"),
+                    },
+                    {
+                        "title": "Credenciais de operadora",
+                        "icon": "key",
+                        "link": reverse_lazy("admin:tiss_tissoperatorconfig_changelist"),
+                        "permission": lambda request: request.user.has_perm("tiss.view_tissoperatorconfig"),
+                    },
+                    {
+                        "title": "Tabela TUSS",
+                        "icon": "table_view",
+                        "link": reverse_lazy("admin:tiss_tussprocedurecode_changelist"),
+                        "permission": lambda request: request.user.has_perm("tiss.view_tussprocedurecode"),
+                    },
+                    {
+                        "title": "Municípios (IBGE)",
+                        "icon": "map",
+                        "link": reverse_lazy("admin:municipios_municipio_changelist"),
+                        "permission": lambda request: request.user.has_perm("municipios.view_municipio"),
+                    },
+                    # CBO e CID-10 não existem neste repo (dado do Edge
+                    # Gateway hoje) — feature nova, fora de escopo desta
+                    # reorganização. Ver ADMIN-DASHBOARD-REDESIGN.md §3.1.
                 ],
             },
             {
@@ -307,10 +418,16 @@ UNFOLD = {
                         "permission": lambda request: request.user.has_perm("metrics.view_systemlog"),
                     },
                     {
-                        "title": "Suporte",
-                        "icon": "support_agent",
-                        "link": reverse_lazy("admin:support_ticket_changelist"),
-                        "permission": lambda request: request.user.has_perm("support.view_ticket"),
+                        "title": "Auditoria de leitura (LGPD)",
+                        "icon": "policy",
+                        "link": reverse_lazy("admin:portal_gestor_portalreadauditlog_changelist"),
+                        "permission": lambda request: request.user.has_perm("portal_gestor.view_portalreadauditlog"),
+                    },
+                    {
+                        "title": "Acessos de suporte",
+                        "icon": "badge",
+                        "link": reverse_lazy("admin:accounts_clinicaccess_changelist"),
+                        "permission": lambda request: request.user.has_perm("accounts.view_clinicaccess"),
                     },
                     {
                         "title": "Usuários & Permissões",
@@ -322,21 +439,13 @@ UNFOLD = {
             },
         ],
     },
-    "TABS": [
-        {
-            "models": [
-                "clinicas.clinica",
-                "clinicas.usuario",
-            ],
-            "separator": True,
-            "items": [  # Chave obrigatória que corrige o KeyError
-                {
-                    "title": "Visão Geral",
-                    "link": "admin:clinics_clinica_changelist",
-                },
-            ],
-        }
-    ],
+    # NOTA (ADMIN-DASHBOARD-REDESIGN §1.2): o bloco "TABS" que existia aqui
+    # apontava para "clinicas.clinica" / admin:clinics_clinica_changelist —
+    # app label e nome de model errados (o real é "clinics" / "Clinic").
+    # Nunca resolvia; era um KeyError-workaround morto, não uma feature em
+    # uso. Removido nesta reorganização em vez de corrigido, pois nenhuma
+    # tela hoje precisa de tabs de model — se surgir a necessidade, refazer
+    # com o app_label/model corretos.
 }
 
 # LEGADO — Notion foi substituído pelo Zoho Desk (BACFF-AVULSA-07, Notion
