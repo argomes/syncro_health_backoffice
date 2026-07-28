@@ -375,3 +375,59 @@ implementado que dependa dele** — ver §10.4.
 - **D4 / Orizon Fature:** `orizon_fature_client.py` não foi escrito. `providers/orizon.py::enviar_lote` levanta `OperacaoNaoSuportada` e `capabilities().envio_lote` é `False`. A arquitetura está pronta para recebê-lo: implementar o Fature é preencher uma função de um módulo que já existe.
 - **ABC/`Protocol` formal:** adiada conforme §6. A suíte de contrato parametrizada sobre `_PROVIDERS` (`tests_providers.py::ContratoDeProviderTests`) dá a mesma garantia sem a cerimônia. Gatilho para formalizar permanece: 3 providers reais, ou um dev externo escrevendo um.
 - **Probe ativo periódico (Celery Beat):** não implementado, conforme §4.4 — exigiria credencial de clínica-cliente para monitoramento nosso.
+
+### 10.5 Achado posterior — a Orizon é um AGREGADOR, não uma operadora
+
+**Registrado em 2026-07-28, depois do código já escrito. Nada foi
+implementado a respeito — é nota para o Tech Lead avaliar junto com a
+análise do Principal Architect sobre separar a integração de operadoras num
+repositório próprio.**
+
+Contexto novo do Tech Lead: a Orizon **não é uma operadora** — é um meio de
+comunicação/agregador que já atende múltiplas operadoras reais
+(**Bradesco, CarePlus, Cabesp, Cassi, Seguros Unimed**), cada uma com
+particularidades próprias *dentro* do que a Orizon expõe.
+
+**O desenho implementado continua correto e funcional como MVP**, mas a
+modelagem `1 gateway_provider = 1 dialeto` pode não escalar bem para esse
+cenário. O ponto de tensão é concreto e este próprio documento já o
+antecipava sem tirar a conclusão: o §3.2 item 5 lista particularidades que
+**não são da Orizon, são das operadoras dentro dela** —
+
+- Bradesco: **dois registros ANS distintos** (`005711` vs `421715`, errar
+  gera negativa automática) + Solicitação de Senha prévia
+  (`tipoEtapaAutorizacao=1`) com auto-cancelamento em 12h;
+- Cabesp/Cassi: sequencial de endereço com dígitos fixos após a matrícula;
+- Bradesco usa "Código Centralizador" no `codigoPrestadorNaOperadora` onde
+  Cassi/Cabesp usam o sequencial;
+- Economus/CarePlus/Seguros Unimed: regras próprias de negativa.
+
+E o §6 registra "particularidades Bradesco/Cabesp/Cassi/etc. → incremental,
+**dentro do provider correspondente**" — o que, sob a leitura antiga,
+significava "dentro de `providers/orizon.py`". Com o contexto novo, isso
+empilharia N conjuntos de regras de operadora dentro de um único módulo,
+que é exatamente o tipo de `if` por operadora que esta arquitetura existe
+para eliminar — só que escondido um nível abaixo.
+
+**Duas direções possíveis para a próxima iteração** (nenhuma decidida, nenhuma
+implementada):
+
+1. **Provider por operadora real, com transporte compartilhado.** `bradesco`,
+   `cassi`, `cabesp`… cada um um provider, todos reusando um módulo de
+   transporte/envelope Orizon comum. Encaixa no contrato atual sem mudá-lo —
+   `_PROVIDERS` cresce, `resolve()` não muda. Custo: `TISSGatewayProvider`
+   vira uma lista longa e o vínculo "esta operadora fala via Orizon" fica
+   implícito no código do provider.
+2. **Segundo eixo explícito no modelo:** separar *canal* (Orizon, direto,
+   outro hub) de *operadora* (`registro_ans`), com o provider resolvido pelo
+   par. Mais fiel à realidade e provavelmente o caminho certo se a meta é
+   "integrar a maior quantidade possível de operadoras", mas é mudança de
+   modelagem em `TISSOperatorConfig` e merece decisão explícita — não cabia
+   nesta rodada.
+
+**O que a arquitetura entregue já ajuda, independente da direção escolhida:**
+`resolve()` é o único ponto de despacho, `capabilities()` já descreve
+capacidade em vez de identidade, e a chave de agregação do `OperatorCallLog`
+já é `registro_ans` — ou seja, a observabilidade **já** distingue Bradesco de
+Cassi mesmo com ambas passando pelo provider `orizon` hoje. Nenhuma dessas
+peças precisa ser refeita nas duas direções acima.
