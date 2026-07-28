@@ -3,9 +3,10 @@ from django.http import HttpResponse
 from django.utils.html import format_html
 
 from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
+from . import providers
 from .models import (
     TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
-    TUSSProcedureCode, ANSInsuranceOperator, mascarar_numero_carteira,
+    TUSSProcedureCode, ANSInsuranceOperator, OperatorCallLog, mascarar_numero_carteira,
 )
 from .services import enviar_lote, TISSServiceError
 
@@ -18,8 +19,60 @@ class TISSOperatorConfigAdmin(TenantScopedAdminMixin, BaseAdmin):
     list_display = ('nome_operadora', 'registro_ans', 'clinic', 'gateway_provider', 'ativo', 'created_at')
     list_filter = ('ativo', 'gateway_provider')
     search_fields = ('nome_operadora', 'registro_ans', 'clinic__name')
-    readonly_fields = ('id', 'created_at', 'updated_at')
+    readonly_fields = ('id', 'created_at', 'updated_at', 'capacidades', 'conexao')
     exclude = ('login_encrypted', 'senha_encrypted')
+    actions = ['testar_conexao']
+
+    @admin.display(description='Capacidades do provider')
+    def capacidades(self, obj):
+        """§4.5 — o que este provider suporta. Estático, não faz I/O."""
+        if not obj or not obj.pk:
+            return '—'
+        try:
+            caps = providers.capabilities_for(obj)
+        except providers.ProviderNaoRegistrado as exc:
+            return format_html('<span style="color: red;">{}</span>', str(exc))
+        rotulos = {
+            'cobertura': 'Cobertura (elegibilidade/autorização)',
+            'envio_lote': 'Envio de lote',
+            'consulta_status': 'Consulta de status',
+            'cancelamento_guia': 'Cancelamento de guia',
+        }
+        linhas = [
+            f'{"✅" if getattr(caps, chave) else "❌"} {rotulo}'
+            for chave, rotulo in rotulos.items()
+        ]
+        linhas.append(f'Versões do padrão: {", ".join(caps.versoes_padrao_suportadas) or "—"}')
+        linhas.append(f'{"✅" if caps.confirmado_em_homologacao else "⚠️"} Homologado contra a operadora real')
+        return format_html('<br>'.join('{}' for _ in linhas), *linhas)
+
+    @admin.display(description='Última verificação de conexão')
+    def conexao(self, obj):
+        return 'Use a ação "Testar conexão" na listagem.'
+
+    @admin.action(description='Testar conexão com a operadora (sonda leve, sem dado de paciente)')
+    def testar_conexao(self, request, queryset):
+        """
+        §4.4(b) — sonda ATIVA sob demanda. Nunca dispara uma
+        autorização/consulta real: isso teria custo contratual com a
+        operadora e usaria dado de beneficiário para uma finalidade que o
+        titular não consentiu. Funciona com a operadora desativada (é
+        justamente o que se quer checar antes de religar).
+        """
+        for config in queryset:
+            try:
+                saude = providers.health_check(config)
+            except providers.ProviderNaoRegistrado as exc:
+                self.message_user(request, f'{config.nome_operadora}: {exc}', level='ERROR')
+                continue
+            nivel = 'SUCCESS' if saude.reachable else 'WARNING'
+            self.message_user(
+                request,
+                f'{config.nome_operadora} ({config.registro_ans}): '
+                f'{"alcançável" if saude.reachable else "inalcançável"} '
+                f'— {saude.latency_ms}ms — {saude.detail}',
+                level=nivel,
+            )
 
 
 @admin.register(TISSLote)
@@ -130,6 +183,28 @@ class TISSElegibilidadeConsultaAdmin(TenantScopedAdminMixin, BaseAdmin):
     list_filter = ('origem', 'status', 'clinic')
     search_fields = ('clinic__name', 'appointment_id')
     readonly_fields = [f.name for f in TISSElegibilidadeConsulta._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(OperatorCallLog)
+class OperatorCallLogAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    §4.4(a) — log passivo de chamadas às operadoras. Append-only e somente
+    leitura: é a fonte de verdade da saúde das integrações, não deve ser
+    editável nem por suporte.
+
+    Não há nenhum campo com PII aqui por construção (ver docstring do model)
+    — só metadado operacional.
+    """
+    list_display = ('registro_ans', 'gateway_provider', 'operation', 'outcome', 'latency_ms', 'clinic', 'created_at')
+    list_filter = ('outcome', 'operation', 'gateway_provider')
+    search_fields = ('registro_ans', 'clinic__name')
+    readonly_fields = [f.name for f in OperatorCallLog._meta.fields]
 
     def has_add_permission(self, request):
         return False

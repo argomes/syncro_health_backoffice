@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from . import providers
 from .models import (
     TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
     TUSSProcedureCode, ANSInsuranceOperator, mascarar_numero_carteira,
@@ -13,14 +14,29 @@ class TISSOperatorConfigSerializer(serializers.ModelSerializer):
     """
     login = serializers.CharField(write_only=True, required=False, allow_blank=True)
     senha = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    # §4.5 do documento de arquitetura: o gateway e a UI habilitam botões por
+    # CAPACIDADE, nunca por nome de operadora. Sem isto, a recepção acabaria
+    # com um `if operadora == 'orizon'` no frontend — o hardcode mais caro de
+    # desfazer, porque vive no parque de clínicas.
+    capabilities = serializers.SerializerMethodField()
 
     class Meta:
         model = TISSOperatorConfig
         fields = [
             'id', 'clinic', 'nome_operadora', 'registro_ans', 'cnpj_operadora',
-            'endpoint_url', 'ativo', 'login', 'senha', 'created_at', 'updated_at',
+            'endpoint_url', 'gateway_provider', 'ativo', 'capabilities',
+            'login', 'senha', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_capabilities(self, obj):
+        # Nunca levanta: uma config apontando para provider removido do código
+        # ainda precisa ser LISTÁVEL no admin/portal (é justamente a config que
+        # alguém precisa consertar). O erro aparece na chamada de negócio.
+        try:
+            return providers.capabilities_for(obj).as_dict()
+        except providers.ProviderNaoRegistrado:
+            return None
 
     def create(self, validated_data):
         login = validated_data.pop('login', '')

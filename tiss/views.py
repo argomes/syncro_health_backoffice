@@ -24,6 +24,23 @@ from .services import (
 )
 
 
+# Códigos de erro que significam "a config desta operadora bloqueia a chamada
+# automática" — estado de configuração, não erro de validação do pedido. Vão
+# como **409 Conflict** (deliberadamente NÃO 404, NÃO 422) para que o gateway
+# Go possa distinguir "operadora não cadastrada" (404) de "cadastrada mas
+# indisponível por configuração" (409) e mostrar a mensagem certa na
+# recepção — inclusive sugerir o registro manual, que continua permitido (D2).
+_ERROS_CONFIG_OPERADORA_409 = frozenset({
+    'operadora_desativada',    # ativo=False (§4.2 nível 1)
+    'provider_nao_confirmado',  # gateway_provider='desconhecido' (D3)
+    'provider_nao_registrado',  # provider removido do código (§4.2 nível 2)
+})
+
+
+def _http_status_para_erro_tiss(code: str) -> int:
+    return status.HTTP_409_CONFLICT if code in _ERROS_CONFIG_OPERADORA_409 else status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
 def _allowed_clinic_ids(user):
     """Mesma regra de isolamento usada em billing/views.py::InvoiceViewSet — admin vê tudo, os demais só suas clínicas."""
     if user.role == SupportUser.Role.ADMIN:
@@ -80,13 +97,9 @@ class TISSLoteViewSet(viewsets.ModelViewSet):
         try:
             lote = enviar_lote(lote, mock_scenario=mock_scenario)
         except TISSServiceError as exc:
-            # BACFF-AVULSA-12: 409 (não 422/404) para "cadastrada e
-            # desligada" — o gateway precisa distinguir esse caso de erro
-            # de validação/negócio comum.
-            http_status = status.HTTP_409_CONFLICT if exc.code == 'operadora_desativada' else status.HTTP_422_UNPROCESSABLE_ENTITY
             return Response(
                 {'error': exc.code, 'detail': str(exc)},
-                status=http_status,
+                status=_http_status_para_erro_tiss(exc.code),
             )
         return Response(TISSLoteSerializer(lote).data)
 
@@ -229,12 +242,7 @@ def verificar_elegibilidade(request):
             mock_scenario=data.get('mock_scenario', 'success'),
         )
     except TISSServiceError as exc:
-        # BACFF-AVULSA-12: 409 (não 404) — a operadora existe cadastrada,
-        # só está desligada; o gateway precisa distinguir isso de
-        # "operadora_nao_encontrada" para mostrar a mensagem certa na
-        # recepção.
-        http_status = status.HTTP_409_CONFLICT if exc.code == 'operadora_desativada' else status.HTTP_422_UNPROCESSABLE_ENTITY
-        return Response({'error': exc.code, 'detail': str(exc)}, status=http_status)
+        return Response({'error': exc.code, 'detail': str(exc)}, status=_http_status_para_erro_tiss(exc.code))
     return Response(ElegibilidadeRespostaCompletaSerializer(resultado).data, status=status.HTTP_201_CREATED)
 
 

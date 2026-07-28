@@ -26,6 +26,7 @@ class EnviarLoteServiceTests(TestCase):
         self.op = TISSOperatorConfig.objects.create(
             clinic=self.clinic, nome_operadora='Orizon', registro_ans='123456',
             endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider=TISSGatewayProvider.GENERICO_ANS,
         )
         self.guia = TISSGuia.objects.create(
             clinic=self.clinic, numero='1', competencia='2026-07', numero_carteira='123', valor=Decimal('150.50'),
@@ -72,6 +73,7 @@ class EnviarLoteOperadoraDesativadaTests(TestCase):
         self.op = TISSOperatorConfig.objects.create(
             clinic=self.clinic, nome_operadora='Genérica', registro_ans='654321',
             endpoint_url='https://tiss.exemplo.com.br/Service.asmx',
+            gateway_provider=TISSGatewayProvider.GENERICO_ANS,
         )
         self.guia = TISSGuia.objects.create(
             clinic=self.clinic, numero='1', competencia='2026-07', numero_carteira='321', valor=Decimal('100.00'),
@@ -86,7 +88,7 @@ class EnviarLoteOperadoraDesativadaTests(TestCase):
         lote.refresh_from_db()
         self.assertEqual(lote.status, TISSLoteStatus.ENVIADO)
 
-    @patch('tiss.services.soap_enviar_lote')
+    @patch('tiss.providers.generico_ans.soap_enviar_lote')
     def test_operadora_inativa_bloqueia_antes_de_qualquer_io_de_rede(self, mock_soap_enviar_lote):
         self.op.ativo = False
         self.op.save(update_fields=['ativo'])
@@ -128,7 +130,7 @@ class EnviarLoteProviderDispatchTests(TestCase):
         guia.save()
         return lote
 
-    @patch('tiss.services.soap_enviar_lote')
+    @patch('tiss.providers.generico_ans.soap_enviar_lote')
     def test_clinica_orizon_nao_chama_client_generico(self, mock_soap_enviar_lote):
         lote = self._make_lote(TISSGatewayProvider.ORIZON)
 
