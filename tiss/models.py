@@ -9,13 +9,26 @@ from .crypto import encrypt_credential, decrypt_credential
 
 class TISSGatewayProvider(models.TextChoices):
     """
-    BACFF-014: qual client SOAP usar para esta operadora — o genérico
-    (padrão ANS publicado, `tiss/soap_client.py`) ou um hub específico já
-    integrado (`tiss/orizon_autorize_client.py`). Novas operadoras/hubs
-    especulativos (Sulamérica, Porto Seguro etc.) NÃO entram aqui até
-    terem client próprio implementado.
+    BACFF-014: qual client SOAP usar para esta operadora. Cada valor aqui
+    DEVE ter uma entrada correspondente em `tiss/providers/_PROVIDERS` —
+    há teste de integridade que quebra o build se um valor for adicionado
+    sem provider registrado (§8.6 do documento de arquitetura). Novas
+    operadoras/hubs especulativos (Sulamérica, Porto Seguro etc.) NÃO
+    entram aqui até terem client próprio implementado E homologado.
+
+    D3 (decisão do Tech Lead, 2026-07-28): `DESCONHECIDO` é o novo default.
+    Até esta arquitetura, o default era `GENERICO_ANS` — ou seja, qualquer
+    config criada sem escolha explícita silenciosamente assumia falar o
+    dialeto genérico ANS, que NENHUMA operadora nossa confirmou aceitar (e
+    que sequer envia credencial — buraco B4 do documento). Um default que
+    tenta um dialeto não confirmado contra uma operadora real produz glosa
+    e retrabalho de faturamento na clínica; falhar explicitamente é
+    estritamente melhor. `GENERICO_ANS` continua existindo, mas agora só
+    por ESCOLHA DELIBERADA de quem confirmou a compatibilidade com a
+    operadora — nunca por omissão.
     """
-    GENERICO_ANS = 'generico_ans', 'Genérico (padrão ANS)'
+    DESCONHECIDO = 'desconhecido', 'Desconhecido (não confirmado — bloqueia chamada automática)'
+    GENERICO_ANS = 'generico_ans', 'Genérico (padrão ANS) — só com compatibilidade confirmada'
     ORIZON = 'orizon', 'Orizon (Autorize)'
 
 
@@ -36,8 +49,13 @@ class TISSOperatorConfig(models.Model):
     cnpj_operadora = models.CharField(max_length=14, blank=True)
     endpoint_url = models.URLField(max_length=255)
     gateway_provider = models.CharField(
-        max_length=20, choices=TISSGatewayProvider, default=TISSGatewayProvider.GENERICO_ANS,
-        help_text='Qual client SOAP usar para esta operadora (genérico ANS ou hub específico como Orizon)',
+        max_length=20, choices=TISSGatewayProvider, default=TISSGatewayProvider.DESCONHECIDO,
+        help_text=(
+            'Qual client SOAP usar para esta operadora. Deixe em "Desconhecido" '
+            'até confirmar o dialeto contra o manual técnico oficial da operadora: '
+            'nesse estado a chamada automática é bloqueada com erro explícito e a '
+            'recepção usa o registro manual, em vez de mandar payload no dialeto errado.'
+        ),
     )
 
     # Sempre armazenados cifrados (Fernet) — nunca setar/ler o valor plano
@@ -287,6 +305,67 @@ class TISSElegibilidadeConsulta(models.Model):
 
     def __str__(self):
         return f'Elegibilidade — {self.clinic.name} ({self.origem}, {self.status})'
+
+
+class OperatorCallOperation(models.TextChoices):
+    COBERTURA = 'cobertura', 'Cobertura (elegibilidade/autorização)'
+    ENVIO_LOTE = 'envio_lote', 'Envio de lote'
+
+
+class OperatorCallOutcome(models.TextChoices):
+    SUCCESS = 'success', 'Sucesso'
+    SOAP_FAULT = 'soap_fault', 'Operadora rejeitou a requisição'
+    NETWORK_ERROR = 'network_error', 'Falha de rede/transporte'
+    PROVIDER_ERROR = 'provider_error', 'Erro estrutural de provider'
+
+
+class OperatorCallLog(models.Model):
+    """
+    §4.4(a) do documento de arquitetura + ADMIN-DASHBOARD-REDESIGN §4.1.
+    Append-only, uma linha por chamada de negócio a uma operadora.
+    Responde "a operadora X está saudável?" de forma uniforme para QUALQUER
+    provider plugado.
+
+    A chave de agregação é `registro_ans` (chave de negócio genérica), NÃO o
+    nome do gateway — o dashboard nunca precisa de um `if orizon`.
+
+    **Onde a escrita acontece, e por quê:** não dentro de `soap_client.py`
+    (isso obrigaria cada provider novo a lembrar de instrumentar), e sim em
+    `tiss/providers/__init__.py`, envolvendo a chamada ao provider já
+    resolvido. Assim um provider novo ganha observabilidade de graça, sem
+    uma linha de instrumentação própria — é o que torna o health check
+    genérico de verdade em vez de "genérico se o dev lembrar".
+
+    **LGPD — o que esta tabela deliberadamente NÃO tem:** nenhum payload,
+    nenhum XML, nenhum `erro_mensagem` cru, nenhum `numero_carteira`,
+    nenhum nome de beneficiário. A resposta TISS contém PHI; só metadado
+    operacional entra aqui. `outcome` é um enum fechado justamente para que
+    não haja campo de texto livre onde alguém possa despejar a resposta da
+    operadora "só para depurar".
+
+    Retenção: purgar > 90 dias (`manage.py purgar_operator_call_log`),
+    senão a tabela cresce sem limite e vira custo de banco.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    registro_ans = models.CharField(max_length=6, help_text='Chave de agregação genérica — nunca o nome do gateway')
+    gateway_provider = models.CharField(max_length=20, choices=TISSGatewayProvider)
+    operation = models.CharField(max_length=20, choices=OperatorCallOperation)
+    clinic = models.ForeignKey(Clinic, on_delete=models.SET_NULL, null=True, blank=True, related_name='tiss_operator_calls')
+    outcome = models.CharField(max_length=20, choices=OperatorCallOutcome)
+    latency_ms = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = 'Log de Chamada à Operadora'
+        verbose_name_plural = 'Logs de Chamada à Operadora'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['registro_ans', 'created_at']),
+            models.Index(fields=['clinic', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.registro_ans} — {self.operation} ({self.outcome}, {self.latency_ms}ms)'
 
 
 class TUSSProcedureCode(models.Model):

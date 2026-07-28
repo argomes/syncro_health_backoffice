@@ -45,9 +45,14 @@ class ConsultarElegibilidadeAutomaticaServiceTests(TestCase):
 
     def setUp(self):
         self.clinic = make_clinic()
+        # D3: `gateway_provider` passou a ser explícito. Estes testes
+        # exercitam o caminho genérico ANS, então declaram-no — antes eles
+        # dependiam do default silencioso do model, que é exatamente o que
+        # o D3 eliminou.
         self.op = TISSOperatorConfig.objects.create(
             clinic=self.clinic, nome_operadora='Orizon', registro_ans='123456',
             endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider=TISSGatewayProvider.GENERICO_ANS,
         )
 
     def test_cenario_success_persiste_elegivel_true(self):
@@ -120,9 +125,14 @@ class ConsultarElegibilidadeOperadoraDesativadaTests(TestCase):
 
     def setUp(self):
         self.clinic = make_clinic()
+        # D3: `gateway_provider` passou a ser explícito. Estes testes
+        # exercitam o caminho genérico ANS, então declaram-no — antes eles
+        # dependiam do default silencioso do model, que é exatamente o que
+        # o D3 eliminou.
         self.op = TISSOperatorConfig.objects.create(
             clinic=self.clinic, nome_operadora='Orizon', registro_ans='123456',
             endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider=TISSGatewayProvider.GENERICO_ANS,
         )
 
     def test_operadora_ativa_prossegue_sem_regressao(self):
@@ -132,7 +142,7 @@ class ConsultarElegibilidadeOperadoraDesativadaTests(TestCase):
         )
         self.assertTrue(consulta.elegivel)
 
-    @patch('tiss.services.soap_verificar_elegibilidade')
+    @patch('tiss.providers.generico_ans.soap_verificar_elegibilidade')
     def test_operadora_inativa_bloqueia_antes_de_qualquer_io_de_rede(self, mock_soap_verificar):
         self.op.ativo = False
         self.op.save(update_fields=['ativo'])
@@ -153,6 +163,10 @@ class ConsultarElegibilidadeOperadoraDesativadaTests(TestCase):
 class RegistrarElegibilidadeManualServiceTests(TestCase):
     def setUp(self):
         self.clinic = make_clinic()
+        # Deliberadamente SEM `gateway_provider` explícito: fica no novo
+        # default `desconhecido` (D3). Isso faz esta classe inteira provar,
+        # de quebra, que o registro manual funciona mesmo numa config cujo
+        # dialeto nunca foi confirmado — D2 e D3 se sustentando juntos.
         self.op = TISSOperatorConfig.objects.create(
             clinic=self.clinic, nome_operadora='Orizon', registro_ans='123456',
             endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
@@ -210,6 +224,7 @@ class ElegibilidadeEndpointTests(TestCase):
         self.op = TISSOperatorConfig.objects.create(
             clinic=self.clinic, nome_operadora='Orizon', registro_ans='123456',
             endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider=TISSGatewayProvider.GENERICO_ANS,
         )
 
     def test_verificar_endpoint_exige_license_key(self):
@@ -294,29 +309,41 @@ class ConsultarElegibilidadeDispatchGatewayProviderTests(TestCase):
         op.save(update_fields=['login_encrypted', 'senha_encrypted'])
         return op
 
-    def test_default_sem_gateway_provider_explicito_usa_generico_ans(self):
-        """Sem valor explícito, o default do model (`generico_ans`) mantém o comportamento pré-existente."""
+    def test_default_sem_gateway_provider_explicito_e_desconhecido_e_bloqueia(self):
+        """
+        D3 (substitui `test_default_sem_gateway_provider_explicito_usa_generico_ans`):
+        o default do model deixou de ser `generico_ans`. Uma config criada
+        sem escolha explícita não tem dialeto confirmado com a operadora, e
+        o comportamento correto passou a ser falhar claramente em vez de
+        tentar o dialeto genérico — que nenhuma operadora nossa confirmou
+        aceitar, e que sequer envia credencial.
+
+        O teste afirma as duas metades que importam: falha com código
+        explícito, E nenhum client SOAP é sequer invocado.
+        """
         op = TISSOperatorConfig.objects.create(
             clinic=self.clinic, nome_operadora='Amil', registro_ans='654321',
             endpoint_url='https://amil.example.com/Service.asmx',
         )
-        self.assertEqual(op.gateway_provider, TISSGatewayProvider.GENERICO_ANS)
-        with patch('tiss.services.soap_verificar_elegibilidade') as mock_generico, \
-                patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
-            mock_generico.return_value = ElegibilidadeResult(
-                elegivel=True, numero_carteira='CARTEIRA-D1', nome_beneficiario='', motivos_negativa=[], raw_response='<xml/>',
-            )
-            consulta = consultar_elegibilidade_automatica(
-                clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D1',
-            )
-        mock_generico.assert_called_once()
+        self.assertEqual(op.gateway_provider, TISSGatewayProvider.DESCONHECIDO)
+
+        with patch('tiss.providers.generico_ans.soap_verificar_elegibilidade') as mock_generico, \
+                patch('tiss.providers.orizon.orizon_solicitar_autorizacao') as mock_orizon:
+            with self.assertRaises(TISSServiceError) as ctx:
+                consultar_elegibilidade_automatica(
+                    clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D1',
+                )
+
+        self.assertEqual(ctx.exception.code, 'provider_nao_confirmado')
+        mock_generico.assert_not_called()
         mock_orizon.assert_not_called()
-        self.assertTrue(consulta.elegivel)
+        # Nenhum log operacional: não houve consulta a registrar.
+        self.assertEqual(TISSElegibilidadeConsulta.objects.filter(clinic=self.clinic).count(), 0)
 
     def test_gateway_provider_generico_ans_explicito_chama_client_generico(self):
         op = self._make_operator(TISSGatewayProvider.GENERICO_ANS)
-        with patch('tiss.services.soap_verificar_elegibilidade') as mock_generico, \
-                patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+        with patch('tiss.providers.generico_ans.soap_verificar_elegibilidade') as mock_generico, \
+                patch('tiss.providers.orizon.orizon_solicitar_autorizacao') as mock_orizon:
             mock_generico.return_value = ElegibilidadeResult(
                 elegivel=False, numero_carteira='CARTEIRA-D2', nome_beneficiario='',
                 motivos_negativa=[('1822', 'Carteira vencida')], raw_response='<xml/>',
@@ -331,8 +358,8 @@ class ConsultarElegibilidadeDispatchGatewayProviderTests(TestCase):
 
     def test_gateway_provider_orizon_chama_client_orizon_e_normaliza_autorizado(self):
         op = self._make_operator(TISSGatewayProvider.ORIZON)
-        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon, \
-                patch('tiss.services.soap_verificar_elegibilidade') as mock_generico:
+        with patch('tiss.providers.orizon.orizon_solicitar_autorizacao') as mock_orizon, \
+                patch('tiss.providers.generico_ans.soap_verificar_elegibilidade') as mock_generico:
             mock_orizon.return_value = AutorizacaoResult(
                 situacao=SituacaoAutorizacao.AUTORIZADO,
                 numero_guia_operadora='GUIA-OP-999',
@@ -354,7 +381,7 @@ class ConsultarElegibilidadeDispatchGatewayProviderTests(TestCase):
 
     def test_gateway_provider_orizon_normaliza_negado_com_motivos(self):
         op = self._make_operator(TISSGatewayProvider.ORIZON)
-        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+        with patch('tiss.providers.orizon.orizon_solicitar_autorizacao') as mock_orizon:
             mock_orizon.return_value = AutorizacaoResult(
                 situacao=SituacaoAutorizacao.NEGADO,
                 numero_guia_operadora='', codigo_glosa='3144',
@@ -368,7 +395,7 @@ class ConsultarElegibilidadeDispatchGatewayProviderTests(TestCase):
 
     def test_gateway_provider_orizon_normaliza_fault_como_falha_operadora(self):
         op = self._make_operator(TISSGatewayProvider.ORIZON)
-        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+        with patch('tiss.providers.orizon.orizon_solicitar_autorizacao') as mock_orizon:
             mock_orizon.return_value = OrizonSOAPFaultResult(
                 codigo_erro='LoginInvalido', descricao_erro='Login ou senha inválidos', raw_response='<xml/>',
             )
@@ -383,7 +410,7 @@ class ConsultarElegibilidadeDispatchGatewayProviderTests(TestCase):
 
     def test_gateway_provider_orizon_falha_de_transporte_nao_propaga_excecao(self):
         op = self._make_operator(TISSGatewayProvider.ORIZON)
-        with patch('tiss.services.orizon_solicitar_autorizacao') as mock_orizon:
+        with patch('tiss.providers.orizon.orizon_solicitar_autorizacao') as mock_orizon:
             mock_orizon.side_effect = OrizonAutorizeClientError('soap_network_error')
             consulta = consultar_elegibilidade_automatica(
                 clinic=self.clinic, operator_config=op, numero_carteira='CARTEIRA-D6',
