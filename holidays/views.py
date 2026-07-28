@@ -1,10 +1,15 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from clinics.permissions import IsAuthenticatedByLicenseKey
 from .services import HolidayService
 
 class ListarFeriadosClinicaView(APIView):
-    permission_classes = [IsAuthenticated]
+    # EDGW-060: consumido pelo worker do gateway (chamada máquina-a-máquina,
+    # sem sessão de usuário) via X-License-Key — mesmo mecanismo usado pelos
+    # outros endpoints de referência do gateway (ver tiss/views.py,
+    # clinics/permissions.py). IsAuthenticated (default, JWT de usuário) não
+    # é utilizável pelo worker headless do gateway.
+    permission_classes = [IsAuthenticatedByLicenseKey]
     
     def get(self, request):
         ibge_code = request.query_params.get('ibge')

@@ -1,18 +1,25 @@
 import datetime
-from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework.test import APITestCase, APIClient
+from clinics.tests import make_clinic
 from holidays.models import Feriado
 
-User = get_user_model()
 
 class HolidayViewTestCase(APITestCase):
-    """Testa o comportamento das rotas HTTP do backoffice"""
+    """Testa o comportamento das rotas HTTP do backoffice.
+
+    EDGW-060: este endpoint é consumido pelo worker do gateway (chamada
+    máquina-a-máquina via X-License-Key, sem sessão de usuário) — mesmo
+    mecanismo já usado pelos endpoints de referência do gateway
+    (ver tiss/tests_reference_data.py). Por isso a clínica de teste aqui
+    reaproveita o helper `make_clinic` de clinics/tests.py em vez de criar
+    um usuário autenticado por JWT.
+    """
 
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(username="clinica_teste", password="password123")
-        
+        self.clinic = make_clinic()
+
         # Popula o banco com um feriado existente
         Feriado.objects.create(
             date=datetime.date(2026, 1, 1),
@@ -33,10 +40,10 @@ class HolidayViewTestCase(APITestCase):
 
     def test_autoriza_requisicao_autenticada_e_valida_parametros(self):
         """Exige o envio dos parâmetros obrigatórios por query string"""
-        self.client.force_authenticate(user=self.user)
-        
+        auth_headers = {'HTTP_X_LICENSE_KEY': str(self.clinic.license_key)}
+
         # Requisição sem os parâmetros obrigatórios
-        response_sem_parametros = self.client.get(self.url)
+        response_sem_parametros = self.client.get(self.url, **auth_headers)
         self.assertEqual(response_sem_parametros.status_code, 400)
 
         # Requisição correta (Simulando que o cache local do IBGE já existe para não chamar API mockada)
@@ -49,6 +56,6 @@ class HolidayViewTestCase(APITestCase):
             description="Feriado Municipal de teste.",
             uf="SP"
         )
-        response_valido = self.client.get(self.url, {'ibge': '3534401', 'year': '2026'})
+        response_valido = self.client.get(self.url, {'ibge': '3534401', 'year': '2026'}, **auth_headers)
         self.assertEqual(response_valido.status_code, 200)
         self.assertEqual(len(response_valido.json()), 2)
