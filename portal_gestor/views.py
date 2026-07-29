@@ -1,3 +1,5 @@
+import uuid
+
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.response import Response
@@ -178,6 +180,14 @@ class TicketDetailView(APIView):
     sincronizadas (BACFF-AVULSA-10). Só consulta — responder pelo portal é
     fora de escopo desta task. 404 (não 403) para ticket de outra clínica,
     mesmo cuidado anti-enumeração das outras views deste módulo.
+
+    BACFF-AVULSA-11 (LGPD Art. 37) — `description` do ticket pode conter PHI
+    de terceiros citada incidentalmente pelo atendente, então todo acesso
+    BEM-SUCEDIDO gera um registro em `PortalReadAuditLog`, mesmo padrão de
+    `_ReportReadView` (BACFF-AVULSA-05). Como não há `ReportSession` aqui
+    (não é um relatório), `session_id` é um UUID gerado na hora só para
+    correlacionar esta leitura específica — o campo não é FK, existe só como
+    metadado de auditoria.
     """
 
     authentication_classes = [ClinicCookieJWTAuthentication, ClinicJWTAuthentication]
@@ -188,6 +198,14 @@ class TicketDetailView(APIView):
             ticket = Ticket.objects.filter(clinic=request.user.clinic).prefetch_related('messages').get(id=ticket_id)
         except Ticket.DoesNotExist:
             return Response({'error': 'not_found'}, status=status.HTTP_404_NOT_FOUND)
+
+        PortalReadAuditLog.objects.create(
+            clinic_user=request.user,
+            clinic=request.user.clinic,
+            session_id=uuid.uuid4(),
+            entity='support_ticket',
+            record_count=1,
+        )
 
         return Response(PortalTicketDetailSerializer(ticket).data)
 
