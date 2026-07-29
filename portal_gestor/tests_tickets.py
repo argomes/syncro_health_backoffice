@@ -17,6 +17,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import ClinicUser
 from clinics.models import Clinic, ClinicStatus, Plan
+from portal_gestor.models import PortalReadAuditLog
 from support.models import Ticket, TicketMessage, sync_ticket_to_zoho
 
 
@@ -120,12 +121,29 @@ class TicketApiViewsTest(TestCase):
         self.assertEqual(len(response.data['messages']), 1)
         self.assertEqual(response.data['messages'][0]['message'], 'Estamos verificando.')
 
+    def test_detail_access_generates_audit_log(self):
+        """BACFF-AVULSA-11 (LGPD Art. 37) — `description` pode carregar PHI de
+        terceiros citada incidentalmente pelo atendente, então todo acesso
+        bem-sucedido ao detalhe do ticket precisa ficar registrado, mesmo
+        padrão de `_ReportReadView` (BACFF-AVULSA-05)."""
+        auth = self._login('gerente@a.com')
+
+        response = self.client.get(f'/portal/api/support/tickets/{self.ticket_a.id}/', **auth)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        log = PortalReadAuditLog.objects.get()
+        self.assertEqual(log.clinic, self.clinic_a)
+        self.assertEqual(log.clinic_user, self.user_a)
+        self.assertEqual(log.entity, 'support_ticket')
+        self.assertEqual(log.record_count, 1)
+
     def test_detail_other_clinic_ticket_returns_404_not_403(self):
         """Anti-IDOR: clínica A não deve conseguir nem confirmar a existência
         de um ticket da clínica B."""
         auth_a = self._login('gerente@a.com')
         response = self.client.get(f'/portal/api/support/tickets/{self.ticket_b.id}/', **auth_a)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(PortalReadAuditLog.objects.exists())
 
     def test_detail_nonexistent_ticket_returns_404(self):
         auth = self._login('gerente@a.com')
