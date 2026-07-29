@@ -68,7 +68,6 @@ def make_config(clinic, gateway_provider, ativo=True, registro_ans=None):
     )
     op.set_login('login-teste')
     op.set_senha('senha-teste')
-    op.save(update_fields=['login_encrypted', 'senha_encrypted'])
     return op
 
 
@@ -193,7 +192,7 @@ class IntegridadeDeRegistroTests(TestCase):
         contra produção antes de remover um provider do código (§4.2 nível 2).
         """
         orfas = TISSOperatorConfig.objects.filter(ativo=True).exclude(
-            gateway_provider__in=[str(k) for k in providers._PROVIDERS],
+            connection__gateway_provider__in=[str(k) for k in providers._PROVIDERS],
         )
         self.assertFalse(orfas.exists())
 
@@ -428,7 +427,7 @@ class MigracaoD3Tests(TestCase):
 
     def test_nenhuma_config_generico_ans_remanescente_do_default_antigo(self):
         self.assertFalse(
-            TISSOperatorConfig.objects.filter(gateway_provider='generico_ans').exists(),
+            TISSOperatorConfig.objects.filter(connection__gateway_provider='generico_ans').exists(),
             'a migration 0008 deveria ter movido todas as configs genéricas para "desconhecido"',
         )
 

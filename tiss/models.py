@@ -32,29 +32,31 @@ class TISSGatewayProvider(models.TextChoices):
     ORIZON = 'orizon', 'Orizon (Autorize)'
 
 
-class TISSOperatorConfig(models.Model):
+class TISSOperatorConnection(models.Model):
     """
-    Credenciais/endpoint de uma operadora (ou hub, ex: Orizon) para uma
-    clínica específica. Uma clínica pode ter mais de uma operadora
-    configurada (uma por convênio) — nunca a mesma operadora aparece em
-    lotes de clínicas diferentes (isolamento por FK obrigatória a Clinic).
+    BACFF — correção do defeito de credencial duplicada descrito em
+    `.claude/tasks/TISS-MULTI-OPERATOR-STRATEGY.md` §2: transporte + endpoint
+    + credencial de UMA clínica para UM agregador/gateway (ex.: "a Orizon da
+    Clínica X"). Uma clínica que fala com N operadoras reais através do MESMO
+    agregador reaproveita a MESMA connection — a credencial (que é do
+    agregador, não da operadora real) deixa de ser copiada N vezes.
+
+    `TISSOperatorConfig` (abaixo) passa a ser só a particularidade da
+    operadora real (registro ANS, nome) + FK para esta connection.
 
     login/senha NUNCA ficam em texto plano no banco — só o token Fernet.
     Não expor em __str__, admin list_display, serializers ou logs.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    clinic = models.ForeignKey(Clinic, on_delete=models.CASCADE, related_name='tiss_operator_configs')
-    nome_operadora = models.CharField(max_length=70)
-    registro_ans = models.CharField(max_length=6, help_text='Registro ANS da operadora (6 dígitos)')
-    cnpj_operadora = models.CharField(max_length=14, blank=True)
+    clinic = models.ForeignKey(Clinic, on_delete=models.CASCADE, related_name='tiss_operator_connections')
     endpoint_url = models.URLField(max_length=255)
     gateway_provider = models.CharField(
         max_length=20, choices=TISSGatewayProvider, default=TISSGatewayProvider.DESCONHECIDO,
         help_text=(
-            'Qual client SOAP usar para esta operadora. Deixe em "Desconhecido" '
-            'até confirmar o dialeto contra o manual técnico oficial da operadora: '
-            'nesse estado a chamada automática é bloqueada com erro explícito e a '
-            'recepção usa o registro manual, em vez de mandar payload no dialeto errado.'
+            'Qual client SOAP usar para este transporte. Deixe em "Desconhecido" '
+            'até confirmar o dialeto contra o manual técnico oficial: nesse estado '
+            'a chamada automática é bloqueada com erro explícito e a recepção usa '
+            'o registro manual, em vez de mandar payload no dialeto errado.'
         ),
     )
 
@@ -63,19 +65,22 @@ class TISSOperatorConfig(models.Model):
     login_encrypted = models.TextField(blank=True)
     senha_encrypted = models.TextField(blank=True)
 
-    ativo = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = 'Configuração de Operadora TISS'
-        verbose_name_plural = 'Configurações de Operadora TISS'
-        unique_together = [('clinic', 'registro_ans')]
-        indexes = [models.Index(fields=['clinic', 'ativo'])]
+        verbose_name = 'Conexão de Operadora TISS'
+        verbose_name_plural = 'Conexões de Operadora TISS'
+        # É esta constraint (não a de TISSOperatorConfig) que impede
+        # credencial duplicada por acidente: duas configs da mesma clínica
+        # com o mesmo (endpoint, transporte) SEMPRE compartilham a linha
+        # aqui — ver `get_or_create_for`, usado tanto pelo model quanto pela
+        # migração de dados 0011.
+        unique_together = [('clinic', 'endpoint_url', 'gateway_provider')]
 
     def __str__(self):
         # Nunca incluir login/senha aqui.
-        return f'{self.nome_operadora} ({self.registro_ans}) — {self.clinic.name}'
+        return f'Conexão {self.gateway_provider} — {self.clinic.name} ({self.endpoint_url})'
 
     def set_login(self, plain: str):
         self.login_encrypted = encrypt_credential(plain)
@@ -90,6 +95,140 @@ class TISSOperatorConfig(models.Model):
     @property
     def senha_plain(self) -> str:
         return decrypt_credential(self.senha_encrypted)
+
+    @classmethod
+    def get_or_create_for(cls, *, clinic, gateway_provider, endpoint_url, login=None, senha=None):
+        """
+        Reaproveita a connection existente para (clinic, endpoint_url,
+        gateway_provider) em vez de criar uma nova — é isto que consolida N
+        `TISSOperatorConfig` do mesmo agregador numa única credencial. Usado
+        tanto pelo caminho de criação normal (`TISSOperatorConfig.__init__`
+        legado, serializer) quanto pela migração de dados 0011.
+        """
+        connection, _created = cls.objects.get_or_create(
+            clinic=clinic,
+            endpoint_url=endpoint_url or '',
+            gateway_provider=gateway_provider or TISSGatewayProvider.DESCONHECIDO,
+        )
+        if login or senha:
+            if login:
+                connection.set_login(login)
+            if senha:
+                connection.set_senha(senha)
+            connection.save()
+        return connection
+
+
+class TISSOperatorConfig(models.Model):
+    """
+    Particularidade de UMA operadora real (registro ANS) para uma clínica —
+    transporte/endpoint/credencial NÃO moram mais aqui, moram em
+    `TISSOperatorConnection` (ver docstring acima e §2 do documento de
+    estratégia multi-operadora). Uma clínica pode ter mais de uma operadora
+    configurada (uma por convênio) — nunca a mesma operadora aparece em
+    lotes de clínicas diferentes (isolamento por FK obrigatória a Clinic).
+
+    `clinic` continua replicado aqui (redundante com `connection.clinic`) de
+    propósito: mantém `unique_together` e todo o código existente que já
+    filtra/exibe por `operator_config.clinic` sem indireção, e o `clean()`
+    abaixo garante que a redundância nunca diverge (invariante de
+    isolamento multi-tenant — uma clínica nunca pode apontar para a
+    connection de outra).
+
+    Para compatibilidade com todo o código/testes que já criava configs
+    passando `endpoint_url`/`gateway_provider`/`login`/`senha` diretamente
+    (antes de existir `TISSOperatorConnection`), o construtor aceita esses
+    parâmetros legados e materializa/reaproveita a connection por baixo —
+    ver `__init__`. Código novo deve preferir passar `connection=` explícito.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(Clinic, on_delete=models.CASCADE, related_name='tiss_operator_configs')
+    connection = models.ForeignKey(
+        TISSOperatorConnection, on_delete=models.PROTECT, related_name='operator_configs',
+        help_text='Transporte/endpoint/credencial compartilhados (ex.: a Orizon desta clínica).',
+    )
+    nome_operadora = models.CharField(max_length=70)
+    registro_ans = models.CharField(max_length=6, help_text='Registro ANS da operadora (6 dígitos)')
+    cnpj_operadora = models.CharField(max_length=14, blank=True)
+
+    ativo = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Configuração de Operadora TISS'
+        verbose_name_plural = 'Configurações de Operadora TISS'
+        unique_together = [('clinic', 'registro_ans')]
+        indexes = [models.Index(fields=['clinic', 'ativo'])]
+
+    def __init__(self, *args, **kwargs):
+        connection = kwargs.pop('connection', None)
+        endpoint_url = kwargs.pop('endpoint_url', None)
+        gateway_provider = kwargs.pop('gateway_provider', None)
+        login = kwargs.pop('login', None)
+        senha = kwargs.pop('senha', None)
+        super().__init__(*args, **kwargs)
+        if connection is not None:
+            self.connection = connection
+        elif endpoint_url is not None or gateway_provider is not None or login is not None or senha is not None:
+            # Caminho de compatibilidade retroativa (ver docstring da classe):
+            # reaproveita/consolida a connection em vez de criar uma nova por
+            # config — é exatamente a correção do defeito de credencial
+            # duplicada, feita de graça para quem já chamava
+            # `TISSOperatorConfig(endpoint_url=..., gateway_provider=...)`.
+            self.connection = TISSOperatorConnection.get_or_create_for(
+                clinic=self.clinic,
+                gateway_provider=gateway_provider or TISSGatewayProvider.DESCONHECIDO,
+                endpoint_url=endpoint_url or '',
+                login=login, senha=senha,
+            )
+
+    def clean(self):
+        if self.connection_id and self.clinic_id and self.connection.clinic_id != self.clinic_id:
+            raise ValidationError('connection pertence a outra clínica — violação de isolamento multi-tenant')
+
+    def __str__(self):
+        # Nunca incluir login/senha aqui.
+        return f'{self.nome_operadora} ({self.registro_ans}) — {self.clinic.name}'
+
+    # ------------------------------------------------------------------
+    # Proxies de compatibilidade para `connection` — usados por código e
+    # testes escritos antes da separação. Código NOVO deve ler/escrever
+    # `operator_config.connection.*` diretamente (mais explícito sobre quem
+    # é dono do dado); estes proxies existem só para não quebrar chamadores
+    # existentes (providers legados, admin, testes).
+    # ------------------------------------------------------------------
+    @property
+    def endpoint_url(self) -> str:
+        return self.connection.endpoint_url
+
+    @property
+    def gateway_provider(self) -> str:
+        return self.connection.gateway_provider
+
+    @property
+    def login_encrypted(self) -> str:
+        return self.connection.login_encrypted
+
+    @property
+    def senha_encrypted(self) -> str:
+        return self.connection.senha_encrypted
+
+    def set_login(self, plain: str):
+        self.connection.set_login(plain)
+        self.connection.save(update_fields=['login_encrypted', 'updated_at'])
+
+    def set_senha(self, plain: str):
+        self.connection.set_senha(plain)
+        self.connection.save(update_fields=['senha_encrypted', 'updated_at'])
+
+    @property
+    def login_plain(self) -> str:
+        return self.connection.login_plain
+
+    @property
+    def senha_plain(self) -> str:
+        return self.connection.senha_plain
 
 
 class TISSLoteStatus(models.TextChoices):

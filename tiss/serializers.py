@@ -2,8 +2,8 @@ from rest_framework import serializers
 
 from . import providers
 from .models import (
-    TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
-    TUSSProcedureCode, ANSInsuranceOperator, mascarar_numero_carteira,
+    TISSOperatorConfig, TISSGatewayProvider, TISSLote, TISSGuia, TISSGlosa,
+    TISSElegibilidadeConsulta, TUSSProcedureCode, ANSInsuranceOperator, mascarar_numero_carteira,
 )
 
 
@@ -11,9 +11,23 @@ class TISSOperatorConfigSerializer(serializers.ModelSerializer):
     """
     Nunca expõe login_encrypted/senha_encrypted nem os valores decifrados —
     write-only via `login` / `senha` (não persistidos como estão, só cifrados).
+
+    `endpoint_url`/`gateway_provider`/`login`/`senha` continuam expostos aqui
+    pelo MESMO contrato de API de antes da separação Connection/Config
+    (`.claude/tasks/TISS-MULTI-OPERATOR-STRATEGY.md` §2) — nenhum cliente da
+    API (portal, admin frontend) precisa mudar. O que muda é o destino da
+    escrita: `create`/`update` abaixo resolvem/reaproveitam a
+    `TISSOperatorConnection` compartilhada em vez de duplicar credencial por
+    config. `connection_id` fica exposto read-only para quem quiser inspecionar
+    qual conexão está por trás.
     """
     login = serializers.CharField(write_only=True, required=False, allow_blank=True)
     senha = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    endpoint_url = serializers.URLField(required=False, allow_blank=True)
+    gateway_provider = serializers.ChoiceField(
+        choices=TISSGatewayProvider.choices, required=False, default=TISSGatewayProvider.DESCONHECIDO,
+    )
+    connection_id = serializers.UUIDField(source='connection.id', read_only=True)
     # §4.5 do documento de arquitetura: o gateway e a UI habilitam botões por
     # CAPACIDADE, nunca por nome de operadora. Sem isto, a recepção acabaria
     # com um `if operadora == 'orizon'` no frontend — o hardcode mais caro de
@@ -24,7 +38,7 @@ class TISSOperatorConfigSerializer(serializers.ModelSerializer):
         model = TISSOperatorConfig
         fields = [
             'id', 'clinic', 'nome_operadora', 'registro_ans', 'cnpj_operadora',
-            'endpoint_url', 'gateway_provider', 'ativo', 'capabilities',
+            'endpoint_url', 'gateway_provider', 'connection_id', 'ativo', 'capabilities',
             'login', 'senha', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
