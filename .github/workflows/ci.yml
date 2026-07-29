@@ -7,6 +7,31 @@ on:
     branches: [develop]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff
+
+      - name: Lint (ruff — erros reais, não estilo)
+        # Escopo deliberadamente restrito a E9 (erros de sintaxe) e F821-F823
+        # (uso de nome não definido) — bugs reais que quebrariam em runtime.
+        # Não inclui a régua de estilo completa do ruff (ex.: F401 import não
+        # usado, F841 variável não usada) porque o repo tem débito de estilo
+        # pré-existente não relacionado a esta task (TASK-BO-07, infra de
+        # deploy) — bloquear o deploy por isso seria escopo alheio à task.
+        # Rodar `ruff check .` sem --select localmente pra ver o débito.
+        run: ruff check . --select E9,F821,F822,F823
+
   test:
     runs-on: ubuntu-latest
     env:
@@ -59,3 +84,28 @@ jobs:
         # falha o pipeline, mesmo padrão de rigor do govulncheck no gateway
         # (syncro_gateway/ci.yml) — sem continue-on-error.
         run: pip-audit -r requirements.txt
+
+  deploy:
+    # TASK-BO-07: deploy no Railway só dispara depois que lint + testes +
+    # audit de segurança passarem — se qualquer um falhar, o job `deploy`
+    # nem começa (needs bloqueia, não é best-effort). Só roda em push direto
+    # pra develop (não em pull_request, que não deve disparar deploy).
+    needs: [lint, test, security]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway (serviço backoffice)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        # RAILWAY_TOKEN precisa ser um Project Token (não Account Token) do
+        # serviço "backoffice" no Railway, cadastrado como secret do repo —
+        # não configurado neste ambiente de desenvolvimento (sem acesso a
+        # credenciais reais do Railway), então este passo não pôde ser
+        # validado ponta a ponta aqui. Ver PR para detalhes.
+        run: railway up --service backoffice --detach

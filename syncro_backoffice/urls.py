@@ -1,5 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth import views as auth_views
+from django.db import connection
+from django.db.utils import OperationalError
 from django.http import JsonResponse
 from django.urls import path, include, reverse_lazy
 
@@ -12,6 +14,27 @@ def health_check(request):
     distingue liveness de readiness). Sem auth, sem custo.
     """
     return JsonResponse({'status': 'ok'})
+
+
+def health_check_ready(request):
+    """
+    Readiness check (TASK-BO-07) — usado como healthcheckPath do Railway.
+    Ao contrário de health_check (liveness, sempre 200 se o processo está
+    de pé), este endpoint só responde 200 se o banco estiver acessível de
+    fato: um SELECT 1 real, não um "processo vivo" genérico. Se o banco
+    cair/estiver inacessível, retorna 503 — sinaliza problema real de infra
+    em vez de deixar o serviço "unhealthy" silencioso no Railway.
+
+    Sem auth, sem custo de negócio (não faz query em tabela de domínio, só
+    um SELECT 1 na conexão default) — seguro pra chamar sem throttle a cada
+    poucos segundos pelo orquestrador.
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1')
+    except OperationalError:
+        return JsonResponse({'status': 'unhealthy', 'database': 'unreachable'}, status=503)
+    return JsonResponse({'status': 'ok', 'database': 'ok'})
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from clinics.views import issue_service_token, get_license_info
 from billing.webhook_views import asaas_webhook
@@ -39,6 +62,7 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
 
 urlpatterns = [
     path('health/', health_check, name='health_check'),
+    path('health/ready/', health_check_ready, name='health_check_ready'),
     path('admin/', admin.site.urls),
     path('api/auth/login/', ThrottledTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
