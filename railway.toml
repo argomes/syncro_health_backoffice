@@ -1,0 +1,29 @@
+# TASK-BO-07 — configuração do serviço "backoffice" (web) no Railway.
+#
+# Railway já detecta o Dockerfile na raiz e builda por ele automaticamente
+# (não precisa de [build] aqui). Este arquivo fixa explicitamente o
+# startCommand e o healthcheck — sem ele, o Railway usaria o CMD default do
+# Dockerfile (gunicorn com os mesmos parâmetros) e não teria healthcheckPath
+# configurado, deixando o healthcheck do zero cadastro manual no dashboard.
+#
+# Não cobre o serviço "worker" (Celery) nem "evolution-api" — esses sobem
+# como serviços separados no mesmo projeto Railway, cada um sobrescrevendo
+# o startCommand no dashboard (ver docker/DEPLOY.md). railway.toml na raiz
+# do repo só descreve o serviço principal ligado a este Dockerfile.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "gunicorn syncro_backoffice.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 30"
+
+# /health/ready/ (não /health/) de propósito: precisa responder 200 só
+# quando o banco está acessível de verdade (SELECT 1 real), não um "processo
+# vivo" genérico — ver syncro_backoffice/urls.py:health_check_ready. Um
+# healthcheck que só confirma o processo em pé mascararia banco fora do ar
+# como deploy saudável.
+healthcheckPath = "/health/ready/"
+healthcheckTimeout = 10
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
