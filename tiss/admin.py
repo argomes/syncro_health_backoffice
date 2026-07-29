@@ -5,22 +5,50 @@ from django.utils.html import format_html
 from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 from . import providers
 from .models import (
-    TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSElegibilidadeConsulta,
-    TUSSProcedureCode, ANSInsuranceOperator, OperatorCallLog, mascarar_numero_carteira,
+    TISSOperatorConfig, TISSOperatorConnection, TISSLote, TISSGuia, TISSGlosa,
+    TISSElegibilidadeConsulta, TUSSProcedureCode, ANSInsuranceOperator, OperatorCallLog,
+    mascarar_numero_carteira,
 )
 from .services import enviar_lote, TISSServiceError
 
 
-@admin.register(TISSOperatorConfig)
-class TISSOperatorConfigAdmin(TenantScopedAdminMixin, BaseAdmin):
+@admin.register(TISSOperatorConnection)
+class TISSOperatorConnectionAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    Transporte + endpoint + credencial de UMA clínica para UM agregador (ex.:
+    "a Orizon da Clínica X") — ver `.claude/tasks/TISS-MULTI-OPERATOR-STRATEGY.md`
+    §2. A credencial mora AQUI, não em `TISSOperatorConfig`: uma connection é
+    reaproveitada por todas as operadoras reais que passam por ela, então
+    rotacionar senha é UMA escrita, não N.
+    """
     # login_encrypted/senha_encrypted NUNCA aparecem em list_display nem em
     # fields — só existem como TextField cifrado, não editável no admin
     # (edição é via os campos write-only `login`/`senha` do serializer da API).
-    list_display = ('nome_operadora', 'registro_ans', 'clinic', 'gateway_provider', 'ativo', 'created_at')
-    list_filter = ('ativo', 'gateway_provider')
+    list_display = ('gateway_provider', 'endpoint_url', 'clinic', 'operadoras_atendidas', 'created_at')
+    list_filter = ('gateway_provider',)
+    search_fields = ('endpoint_url', 'clinic__name')
+    readonly_fields = ('id', 'created_at', 'updated_at', 'operadoras_atendidas')
+    exclude = ('login_encrypted', 'senha_encrypted')
+
+    @admin.display(description='Operadoras que usam esta conexão')
+    def operadoras_atendidas(self, obj):
+        if not obj or not obj.pk:
+            return '—'
+        nomes = obj.operator_configs.values_list('nome_operadora', 'registro_ans')
+        if not nomes:
+            return '(nenhuma ainda)'
+        return ', '.join(f'{nome} ({registro})' for nome, registro in nomes)
+
+
+@admin.register(TISSOperatorConfig)
+class TISSOperatorConfigAdmin(TenantScopedAdminMixin, BaseAdmin):
+    # Credencial/endpoint não moram mais aqui — ver `TISSOperatorConnectionAdmin`
+    # acima. `connection` é editável (trocar qual conexão esta operadora usa),
+    # mas a credencial em si só se edita na tela da Connection.
+    list_display = ('nome_operadora', 'registro_ans', 'clinic', 'connection', 'ativo', 'created_at')
+    list_filter = ('ativo', 'connection__gateway_provider')
     search_fields = ('nome_operadora', 'registro_ans', 'clinic__name')
     readonly_fields = ('id', 'created_at', 'updated_at', 'capacidades', 'conexao')
-    exclude = ('login_encrypted', 'senha_encrypted')
     actions = ['testar_conexao']
 
     @admin.display(description='Capacidades do provider')

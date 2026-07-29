@@ -87,7 +87,7 @@ def verificar_cobertura(clinic, operator_config, numero_carteira,
 
     try:
         resultado = orizon_solicitar_autorizacao(
-            endpoint_url=operator_config.endpoint_url,
+            endpoint_url=operator_config.connection.endpoint_url,
             xml_solicitacao=xml_solicitacao,
             mock_scenario=_MOCK_SCENARIO_MAP.get(mock_scenario, mock_scenario),
         )
@@ -155,7 +155,7 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
 
 
 def health_check(operator_config) -> ProviderHealth:
-    return wsdl_health_check(operator_config.endpoint_url, 'orizon')
+    return wsdl_health_check(operator_config.connection.endpoint_url, 'orizon')
 
 
 def capabilities() -> ProviderCapabilities:

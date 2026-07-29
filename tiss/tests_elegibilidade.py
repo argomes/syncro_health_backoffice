@@ -306,7 +306,6 @@ class ConsultarElegibilidadeDispatchGatewayProviderTests(TestCase):
         )
         op.set_login('login-teste')
         op.set_senha('senha-teste')
-        op.save(update_fields=['login_encrypted', 'senha_encrypted'])
         return op
 
     def test_default_sem_gateway_provider_explicito_e_desconhecido_e_bloqueia(self):

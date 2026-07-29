@@ -26,10 +26,13 @@ class TISSOperatorConfigModelTests(TestCase):
         op.save()
 
         # Recarrega do banco puro (evita ler do cache do objeto Python).
-        from django.db import connection
-        with connection.cursor() as cursor:
+        # BACFF — credencial mora em TISSOperatorConnection, não mais em
+        # TISSOperatorConfig (ver `.claude/tasks/TISS-MULTI-OPERATOR-STRATEGY.md` §2).
+        from django.db import connection as db_connection
+        with db_connection.cursor() as cursor:
             cursor.execute(
-                'SELECT login_encrypted, senha_encrypted FROM tiss_tissoperatorconfig WHERE id = %s', [op.id.hex]
+                'SELECT login_encrypted, senha_encrypted FROM tiss_tissoperatorconnection WHERE id = %s',
+                [op.connection.id.hex],
             )
             login_encrypted, senha_encrypted = cursor.fetchone()
         self.assertNotEqual(login_encrypted, 'minha-senha-secreta-login')
@@ -111,3 +114,67 @@ class TISSIsolationTests(TestCase):
         glosas_da_clinica_a = TISSGlosa.objects.filter(guia__clinic=self.clinic_a)
         self.assertIn(glosa_a, glosas_da_clinica_a)
         self.assertEqual(glosas_da_clinica_a.count(), 1)
+
+
+class TISSOperatorConnectionTests(TestCase):
+    """
+    BACFF — correção do defeito de credencial duplicada descrito em
+    `.claude/tasks/TISS-MULTI-OPERATOR-STRATEGY.md` §2: N operadoras reais
+    atrás do mesmo agregador (ex.: Orizon) para a MESMA clínica devem
+    compartilhar UMA `TISSOperatorConnection`, nunca uma credencial por
+    operadora.
+    """
+
+    def test_duas_configs_mesmo_transporte_compartilham_a_mesma_connection(self):
+        clinic = _make_clinic('conexao-compartilhada')
+        bradesco = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Bradesco', registro_ans='005711',
+            endpoint_url='https://wsp.orizonbrasil.com.br:6213/tiss/v40100/tissSolicitacaoProcedimento',
+            gateway_provider='orizon',
+        )
+        bradesco.set_login('login-orizon-clinica-x')
+        bradesco.set_senha('senha-orizon-clinica-x')
+
+        cassi = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Cassi', registro_ans='300700',
+            endpoint_url='https://wsp.orizonbrasil.com.br:6213/tiss/v40100/tissSolicitacaoProcedimento',
+            gateway_provider='orizon',
+        )
+
+        self.assertEqual(bradesco.connection_id, cassi.connection_id)
+        # A credencial setada via UMA config (Bradesco) já vale para a outra
+        # (Cassi) — é exatamente o "uma rotação, uma escrita" do documento.
+        self.assertEqual(cassi.connection.login_plain, 'login-orizon-clinica-x')
+        self.assertEqual(cassi.connection.senha_plain, 'senha-orizon-clinica-x')
+
+    def test_transporte_diferente_na_mesma_clinica_nao_compartilha_connection(self):
+        clinic = _make_clinic('conexao-nao-compartilhada')
+        via_orizon = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Bradesco', registro_ans='005711',
+            endpoint_url='https://wsp.orizonbrasil.com.br:6213/tiss/v40100/tissSolicitacaoProcedimento',
+            gateway_provider='orizon',
+        )
+        via_direto = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Amil', registro_ans='326305',
+            endpoint_url='https://webservices.amil.com.br/tiss/',
+            gateway_provider='generico_ans',
+        )
+        self.assertNotEqual(via_orizon.connection_id, via_direto.connection_id)
+
+    def test_mesmo_endpoint_e_transporte_em_clinicas_diferentes_nao_compartilha_connection(self):
+        """Isolamento multi-tenant: connection nunca é reaproveitada entre clínicas."""
+        clinic_a = _make_clinic('conexao-tenant-a')
+        clinic_b = _make_clinic('conexao-tenant-b')
+        op_a = TISSOperatorConfig.objects.create(
+            clinic=clinic_a, nome_operadora='Bradesco', registro_ans='005711',
+            endpoint_url='https://wsp.orizonbrasil.com.br:6213/tiss/v40100/tissSolicitacaoProcedimento',
+            gateway_provider='orizon',
+        )
+        op_b = TISSOperatorConfig.objects.create(
+            clinic=clinic_b, nome_operadora='Bradesco', registro_ans='005711',
+            endpoint_url='https://wsp.orizonbrasil.com.br:6213/tiss/v40100/tissSolicitacaoProcedimento',
+            gateway_provider='orizon',
+        )
+        self.assertNotEqual(op_a.connection_id, op_b.connection_id)
+        self.assertEqual(op_a.connection.clinic_id, clinic_a.id)
+        self.assertEqual(op_b.connection.clinic_id, clinic_b.id)

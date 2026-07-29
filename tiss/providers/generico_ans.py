@@ -76,7 +76,7 @@ def verificar_cobertura(clinic, operator_config, numero_carteira,
 
     try:
         resultado = soap_verificar_elegibilidade(
-            endpoint_url=operator_config.endpoint_url,
+            endpoint_url=operator_config.connection.endpoint_url,
             xml_mensagem_tiss=xml_pedido,
             mock_scenario=mock_scenario,
         )
@@ -143,7 +143,7 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
 
     try:
         resultado = soap_enviar_lote(
-            endpoint_url=lote.operator_config.endpoint_url,
+            endpoint_url=lote.operator_config.connection.endpoint_url,
             xml_mensagem_tiss=xml_completo,
             mock_scenario=mock_scenario,
         )
@@ -169,7 +169,7 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
 
 
 def health_check(operator_config) -> ProviderHealth:
-    return wsdl_health_check(operator_config.endpoint_url, 'generico_ans')
+    return wsdl_health_check(operator_config.connection.endpoint_url, 'generico_ans')
 
 
 def capabilities() -> ProviderCapabilities:

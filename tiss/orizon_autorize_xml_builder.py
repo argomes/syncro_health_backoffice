@@ -142,8 +142,8 @@ def _cabecalho_xml(clinic, operator_config, sequencial_transacao: str) -> str:
     hora_registro = now.strftime('%H:%M:%S')
     registro_ans = _esc(operator_config.registro_ans)
 
-    login_plain = operator_config.login_plain
-    senha_plain = operator_config.senha_plain
+    login_plain = operator_config.connection.login_plain
+    senha_plain = operator_config.connection.senha_plain
     if not login_plain or not senha_plain:
         raise OrizonAutorizeXMLBuilderError('operator_config_sem_login_senha')
 
