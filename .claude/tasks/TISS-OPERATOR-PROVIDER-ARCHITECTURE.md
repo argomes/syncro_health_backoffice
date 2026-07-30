@@ -431,3 +431,163 @@ capacidade em vez de identidade, e a chave de agregação do `OperatorCallLog`
 já é `registro_ans` — ou seja, a observabilidade **já** distingue Bradesco de
 Cassi mesmo com ambas passando pelo provider `orizon` hoje. Nenhuma dessas
 peças precisa ser refeita nas duas direções acima.
+
+---
+
+## 11. Fature (envio de lote de faturamento) — arquitetura multi-operadora, decisão fechada (2026-07-30)
+
+**Fecha a tensão em aberto do §10.5** para o eixo de faturamento (o eixo de
+autorização/elegibilidade não muda nesta rodada). Pedido do usuário
+(2026-07-30): desenhar o Fature (envio de lote TISS) com visão
+multi-operadora desde o início — hoje só a Orizon (atende Bradesco,
+CarePlus, Cabesp, Cassi, Seguros Unimed), mas amanhã pode ser necessário
+falar DIRETO com Sulamérica, Porto Seguro, Unimed, NotreDame etc. Ports and
+adapters explícito, sem tratar a Orizon como "a" integração de faturamento
+única.
+
+### 11.1 Resolução do §10.5: qual das duas direções vale para o Fature
+
+**A "direção 2" do §10.5 (segundo eixo explícito canal × operadora) já
+existe na modelagem, sem precisar de campo novo.** `TISSOperatorConfig` já é
+a chave "operadora real" (`registro_ans` + `nome_operadora`, `unique_together
+= [('clinic', 'registro_ans')]`) e já tem FK para `TISSOperatorConnection`,
+que carrega o `gateway_provider` (o "canal"/transporte). Múltiplas
+`TISSOperatorConfig` (uma por `registro_ans` — Bradesco `005711`, Bradesco
+`421715`, CarePlus, Cabesp, Cassi, Seguros Unimed) já podem apontar para a
+MESMA `TISSOperatorConnection` (mesmo endpoint Orizon + mesma credencial),
+via `TISSOperatorConnection.get_or_create_for`. Ou seja: **canal e operadora
+real já são dois eixos independentes no schema hoje** — só não estavam
+formalizados como tal em prosa. A "direção 1" (provider por operadora real
+tipo `bradesco`/`cassi`, todos reusando um módulo de transporte comum) NÃO é
+necessária: o transporte comum já é o módulo `providers/orizon.py`
+compartilhado, e a diferenciação por operadora real já acontece via
+`registro_ans`, sem precisar multiplicar entradas em `TISSGatewayProvider`/
+`_PROVIDERS` por operadora.
+
+Isso resolve diretamente o pedido do usuário: **a Orizon só é usada quando o
+`TISSOperatorConfig` daquela guia aponta (via `connection`) para
+`gateway_provider='orizon'`** — e isso só deveria ser verdade para os
+`registro_ans` que a Orizon de fato atende. Uma Sulamérica direta ganha seu
+próprio `TISSOperatorConfig` com uma `TISSOperatorConnection` NOVA (endpoint
+próprio, `gateway_provider` novo, ex. `sulamerica_direto`) — nunca
+reaproveitando a connection Orizon. O mapeamento "quais operadoras a Orizon
+atende" nunca é uma lista hardcoded no código: é decorrência de qual
+connection cada config aponta, uma decisão de CADASTRO (admin), não de
+deploy.
+
+**Não é necessário `fature_provider` distinto de `gateway_provider`.**
+Confirmado contra o manual `Fature Integração Tecnica Webservice - TISS
+4.03.00.pdf`: a autenticação do Fature usa o MESMO campo XML
+`senhaPrestador` do Autorize (a UI do portal chama de "Chave de
+Transmissão", mas é o mesmo par login/senha da mesma connection) — ou seja,
+autorização e faturamento da MESMA operadora real, pelo MESMO hub, sempre
+compartilham a mesma `TISSOperatorConnection`/`gateway_provider`. Um campo
+`fature_provider` separado só se justificaria se alguma operadora falasse
+autorização por um hub e faturamento por outro — nenhum manual lido até
+agora sustenta esse caso, e criar o campo agora seria abstração especulativa
+(regra anti-overengineering do projeto). Se esse caso aparecer, estender
+`TISSGatewayProvider`/adicionar um campo é migration barata e conhecida — não
+vale pagar o custo de manutenção antes de haver evidência real.
+
+**Nenhuma migration de banco é necessária** para o roteamento do Fature —
+`gateway_provider`, `registro_ans`, `nome_operadora` já existem e já bastam.
+
+### 11.2 Contrato do port — extensão mínima de `providers/base.py`
+
+O contrato de `providers/base.py` já reserva `enviar_lote(lote, guias,
+sequencial_transacao, mock_scenario) -> EnvioLoteResultado` para isto — hoje
+`providers/orizon.py::enviar_lote` levanta `OperacaoNaoSuportada` de
+propósito, esperando por `orizon_fature_client.py`/
+`orizon_fature_xml_builder.py` (ainda não escritos, BACFF-014). Analisado o
+manual do Fature linha a linha contra o contrato existente: ele expõe 3
+operações de negócio — (a) enviar lote (`tissLoteGuias`), (b) consultar
+status do protocolo (`tissSolicitacaoStatusProtocolo`), (c) demonstrativo de
+retorno/glosa. (a) já cabe sem mudança de assinatura. Falta UMA função nova:
+
+```
+consultar_status_lote(lote, operator_config, mock_scenario='success')
+    -> ConsultaStatusLoteResultado
+```
+
+Nova dataclass em `base.py`, mesmo espírito de `CancelamentoResultado`:
+nunca levanta exceção de transporte, devolve `sucesso=False` com
+`erro_code`/`erro_mensagem` técnicos em caso de falha. Carrega o status
+agregado do lote (mapeado para `TISSLoteStatus`) e uma lista por guia
+(`numero_guia_operadora`, `status_guia`, `codigo_glosa`, `descricao_glosa`)
+— o demonstrativo de retorno/glosa (c) chega como efeito colateral desta
+consulta, não como uma 6ª função separada.
+
+**Por que estender o contrato existente em vez de criar um 2º port
+paralelo:** um port de faturamento à parte duplicaria `ProviderError`/
+`OperadoraDesativada`/`ProviderNaoRegistrado`/`ProviderNaoConfirmado`, o
+registro em `_PROVIDERS`, a instrumentação (`_InstrumentedProvider`/
+`OperatorCallLog`) e o teste de integridade parametrizado em
+`tests_providers.py` — tudo por uma diferença real de 1 função. SOAP vs.
+REST (para uma futura operadora direta) também não exige contrato
+diferente: o contrato é assinatura Python pura, o provider decide o
+transporte por baixo — nada aqui assume SOAP.
+
+`capabilities().consulta_status` já existe como campo estático em
+`ProviderCapabilities` desde a arquitetura original, mas sem função
+correspondente no contrato (herdado do desenho do Autorize, que também não
+implementou polling). Esta extensão fecha esse gap: `consulta_status=True`
+passa a significar literalmente "este provider implementa
+`consultar_status_lote`", consumido pela UI de TASK-BO-15 para decidir se
+mostra "Atualizar status" manual.
+
+**Fora do escopo do contrato agora:** Recurso de Glosa (Cap. 11 do manual —
+contestação formal, operação de negócio distinta de consulta, não uma
+leitura) e Cancela Guia/Lote do Fature (distinto do cancelamento do Autorize
+já implementado em BACFF-014). Ambos ficam como função nova no contrato
+quando forem implementados — não são adicionados especulativamente agora.
+
+### 11.3 Impacto em TASK-BO-15 (relatórios de faturamento agnósticos de operadora)
+
+O modelo de dados já existente (`TISSLote.operator_config`,
+`TISSOperatorConfig.nome_operadora`/`registro_ans`) já é suficiente para
+relatórios agregados por operadora real — **nenhuma migration nova é
+necessária para TASK-BO-15.** A única mudança é de implementação (não de
+schema): a query/serializer que alimenta "Prontas para Faturar" e o
+histórico de lotes deve agrupar/filtrar por `operator_config.nome_operadora`
+(ou `registro_ans`), NUNCA por `gateway_provider` — `gateway_provider` é
+detalhe de transporte (pode ser `orizon` para 5 operadoras reais
+diferentes); usá-lo como chave de relatório misturaria Bradesco + CarePlus +
+Cabesp + Cassi + Seguros Unimed numa única linha "Orizon", exatamente o
+anti-padrão que este documento existe para evitar.
+
+### 11.4 Nível de generalização (anti-overengineering)
+
+Esta rodada entrega SÓ o contrato (extensão de `base.py` com
+`consultar_status_lote`/`ConsultaStatusLoteResultado`) e a implementação
+real Orizon (`orizon_fature_client.py`/`orizon_fature_xml_builder.py`,
+cobrindo as operadoras já credenciadas via Orizon: Bradesco/CarePlus).
+Nenhum adapter especulativo para Sulamérica/Porto Seguro/Unimed
+direto/NotreDame é escrito agora — cada um entra como um módulo novo em
+`tiss/providers/` + uma entrada em `TISSGatewayProvider`/`_PROVIDERS` quando
+(e se) existir contrato/credencial real, exatamente como a Orizon foi
+adicionada.
+
+### 11.5 Critérios de aceite formais (P0 — Orizon-Bradesco/CarePlus, contra o contrato genérico)
+
+Ver `.claude/tasks/BACKOFFICE-TASKS-AVULSAS.md`, BACFF-017 (SyncroHealth,
+tracker cross-repo) para os critérios Given/When/Then completos e o
+detalhamento do plano de implementação. Resumo:
+
+- Contrato: `ConsultaStatusLoteResultado` segue o mesmo padrão de
+  `CancelamentoResultado` (nunca exceção de transporte, status por guia).
+- `enviar_lote` da Orizon monta o envelope "WS" do Fature (distinto do
+  Autorize e do genérico ANS), respeita o limite de 100 guias/lote (falha
+  ANTES de qualquer I/O se excedido).
+- `consultar_status_lote` devolve status por guia, glosa nunca aplicada ao
+  lote inteiro quando só parte foi glosada.
+- Operadora não atendida pela Orizon (`gateway_provider` diferente de
+  `orizon`, ou `desconhecido`) nunca cai em fallback para o dialeto/endpoint
+  Orizon — falha alto via `ProviderNaoConfirmado`/`ProviderNaoRegistrado`.
+- Nenhum XML de request/response completo logado (extensão do teste
+  anti-vazamento já existente em `tests_providers.py`).
+- Suíte `tiss` e suíte completa verdes, sem regressão.
+
+**Fora do critério de aceite desta rodada:** Recurso de Glosa, Cancela
+Guia/Lote do Fature, particularidades adicionais por operadora (Cap. 8),
+validação ponta a ponta contra homologação real, qualquer adapter para
+operadora direta.
