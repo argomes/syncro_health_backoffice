@@ -21,6 +21,7 @@ qualquer operadora e este módulo resolve para o que a Orizon realmente
 oferece.
 """
 import logging
+import uuid
 from datetime import datetime
 
 from ..models import TISSElegibilidadeOrigem, TISSElegibilidadeStatus, TISSGuia
@@ -30,7 +31,7 @@ from ..orizon_autorize_client import (
 )
 from ..orizon_autorize_xml_builder import (
     build_solicitacao_procedimento_xml, OrizonAutorizeXMLBuilderError,
-    TISS_PADRAO_VERSAO_ORIZON,
+    get_tiss_padrao_versao_orizon,
 )
 from .base import (
     ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
@@ -63,10 +64,18 @@ def verificar_cobertura(clinic, operator_config, numero_carteira,
     sem duplicar a montagem de XML. O `TISSGuia(...)` abaixo nunca chega a
     `.save()`: é um value object transitório, não um registro órfão.
     """
+    # BACFF-014 (achado 3, 2026-07-29): 'ELEGIBILIDADE' era um literal fixo
+    # reutilizado como numeroGuiaPrestador em toda chamada sem appointment_id
+    # — o manual confirma que a Orizon nega automaticamente (Bradesco) uma
+    # transação que reutiliza o mesmo número de guia. Gera um identificador
+    # único por chamada (uuid4) para nunca repetir entre consultas avulsas.
+    # TISSGuia.numero tem max_length=20 (numeroGuiaPrestador) — usa o hex do
+    # uuid4 truncado para caber, sem prefixo, mantendo unicidade prática.
+    numero_guia_avulsa = uuid.uuid4().hex[:20]
     guia_transiente = TISSGuia(
         clinic=clinic,
         appointment_id=appointment_id,
-        numero=appointment_id or 'ELEGIBILIDADE',
+        numero=appointment_id or numero_guia_avulsa,
         numero_carteira=numero_carteira,
         procedimentos=[],
     )
@@ -172,7 +181,7 @@ def capabilities() -> ProviderCapabilities:
         # não o que a operadora oferece — senão a UI oferece botão que quebra.
         consulta_status=False,
         cancelamento_guia=False,
-        versoes_padrao_suportadas=(TISS_PADRAO_VERSAO_ORIZON,),
+        versoes_padrao_suportadas=(get_tiss_padrao_versao_orizon(),),
         exige_credenciais=True,
         # Bloqueado desde o BACFF-014: homologação exige clínica-piloto
         # credenciada (a SyncroHealth é fornecedora, não prestadora). O

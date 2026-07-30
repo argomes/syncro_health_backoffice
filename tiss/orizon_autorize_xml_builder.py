@@ -21,9 +21,10 @@ Diferenças estruturais confirmadas contra o manual (ver BACFF-014 em
   (solicitacaoSP-SADT), resposta pode vir imediata ou "Em Análise"
   (consultada depois via solicitacaoStatusAutorizacao — não implementado
   neste módulo ainda).
-- Versão do padrão documentada pela Orizon é 4.01.00 (não 4.02.00, que é a
-  versão mais recente da ANS usada em xml_builder.py) — Orizon está
-  defasada em relação à ANS, não é erro nosso.
+- Versão do padrão é parametrizável via `settings.TISS_PADRAO_VERSAO_ORIZON`
+  (default '4.03.00' — manual confirma que o WS aceita 4.01.00/4.02.00/
+  4.03.00). Não é mais fixa em código (ver BACFF-014, achado 1 da
+  atualização 2026-07-29: estava hardcoded em '4.01.00').
 
 Hash MD5 do epílogo (`<sch:hash>`): mesma regra do padrão ANS — calculado
 sobre o XML sem os próprios elementos <hash>/<Signature>.
@@ -37,8 +38,18 @@ import hashlib
 from datetime import datetime
 from xml.sax.saxutils import escape
 
-TISS_PADRAO_VERSAO_ORIZON = '4.01.00'
+from django.conf import settings
+
 SCH_NAMESPACE = 'http://www.ans.gov.br/padroes/tiss/schemas'
+
+
+def get_tiss_padrao_versao_orizon() -> str:
+    """
+    Versão do padrão TISS usada nas chamadas ao Autorize da Orizon —
+    parametrizável via `settings.TISS_PADRAO_VERSAO_ORIZON` (BACFF-014,
+    achado 1 da atualização 2026-07-29: antes fixa em '4.01.00' no código).
+    """
+    return getattr(settings, 'TISS_PADRAO_VERSAO_ORIZON', '4.03.00')
 
 
 class OrizonAutorizeXMLBuilderError(Exception):
@@ -95,6 +106,11 @@ def _solicitacao_sp_sadt_xml(guia, operator_config) -> str:
     numero_guia = _esc(guia.numero)
     numero_carteira = _esc(guia.numero_carteira or '0')
     data_solicitacao = datetime.now().strftime('%Y-%m-%d')
+    # BACFF-014 (achado 2, 2026-07-29): obrigatório pelo manual Cap. 10.
+    # Preenchido a partir do CID/indicação clínica registrado na guia; sem
+    # dado disponível, usa um placeholder textual explícito (nunca vazio —
+    # elemento obrigatório pelo schema) em vez de inventar um CID.
+    indicacao_clinica = _esc(getattr(guia, 'indicacao_clinica', '') or 'Não informado')
 
     return (
         '<sch:solicitacaoSP-SADT>'
@@ -103,6 +119,7 @@ def _solicitacao_sp_sadt_xml(guia, operator_config) -> str:
         f'<sch:numeroGuiaPrestador>{numero_guia}</sch:numeroGuiaPrestador>'
         '</sch:cabecalhoSolicitacao>'
         '<sch:ausenciaCodValidacao>01</sch:ausenciaCodValidacao>'
+        f'<sch:indicacaoClinica>{indicacao_clinica}</sch:indicacaoClinica>'
         '<sch:tipoEtapaAutorizacao>1</sch:tipoEtapaAutorizacao>'
         '<sch:dadosBeneficiario>'
         f'<sch:numeroCarteira>{numero_carteira}</sch:numeroCarteira>'
@@ -162,7 +179,7 @@ def _cabecalho_xml(clinic, operator_config, sequencial_transacao: str) -> str:
         '<sch:codigoPrestadorNaOperadora>0</sch:codigoPrestadorNaOperadora>'
         '</sch:identificacaoPrestador></sch:origem>'
         f'<sch:destino><sch:registroANS>{registro_ans}</sch:registroANS></sch:destino>'
-        f'<sch:Padrao>{TISS_PADRAO_VERSAO_ORIZON}</sch:Padrao>'
+        f'<sch:Padrao>{_esc(get_tiss_padrao_versao_orizon())}</sch:Padrao>'
         '<sch:loginSenhaPrestador>'
         f'<sch:loginPrestador>{login}</sch:loginPrestador>'
         f'<sch:senhaPrestador>{senha_hash}</sch:senhaPrestador>'

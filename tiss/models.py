@@ -341,6 +341,16 @@ class TISSGuia(models.Model):
     procedimentos = models.JSONField(default=list, blank=True)
     valor = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    # BACFF-014 (achado 2, atualização 2026-07-29): CID/indicação clínica da
+    # guia — obrigatório pelo manual Autorize 4.03.00 (Cap. 10) como
+    # <sch:indicacaoClinica>, filho de solicitacaoSP-SADT. Ausente até então
+    # em orizon_autorize_xml_builder.py, o que provavelmente rejeitava a
+    # solicitação por schema inválido na Orizon.
+    indicacao_clinica = models.CharField(
+        max_length=500, blank=True,
+        help_text='CID/indicação clínica da guia (usado no <indicacaoClinica> do Autorize Orizon)',
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

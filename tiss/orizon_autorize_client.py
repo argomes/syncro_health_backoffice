@@ -8,11 +8,11 @@ Fonte de verdade: `Autorize-Integracao-Tecnica-Webservice-TISS-4-01-00.pdf`
 
 Endpoints de homologação confirmados no manual (Cap. 9):
 - SOLICITACAO_PROCEDIMENTO:
-  https://wsp.hom.orizonbrasil.com.br:6213/tiss/v40100/tissSolicitacaoProcedimento?wsdl
+  https://wsp.hom.orizonbrasil.com.br:6213/tiss/v40300/tissSolicitacaoProcedimento?wsdl
 - SOLICITA_STATUS_AUTORIZACAO:
-  https://wsp.hom.orizonbrasil.com.br:6213/tiss/v40100/tissSolicitacaoStatusAutorizacao?wsdl
+  https://wsp.hom.orizonbrasil.com.br:6213/tiss/v40300/tissSolicitacaoStatusAutorizacao?wsdl
 - CANCELA_GUIA:
-  https://wsp.hom.orizonbrasil.com.br:6213/tiss/v40100/tissCancelaGuia?wsdl
+  https://wsp.hom.orizonbrasil.com.br:6213/tiss/v40300/tissCancelaGuia?wsdl
 Produção: mesmos paths trocando "wsp.hom.orizonbrasil" por "wsp.orizonbrasil".
 
 O manual não documenta explicitamente a estrutura XML de
