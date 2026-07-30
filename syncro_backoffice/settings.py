@@ -593,6 +593,14 @@ TISS_XSD_DIR = env(
     default=str(BASE_DIR / 'tiss' / 'schemas' / 'ans_tiss_v4_02_00'),
 )
 
+# BACFF-014 — versão do padrão TISS usada nas chamadas ao Autorize da
+# Orizon (`tiss/orizon_autorize_client.py`/`orizon_autorize_xml_builder.py`).
+# Manual oficial confirma que o WS aceita 4.01.00/4.02.00/4.03.00 — era
+# hardcoded em '4.01.00' (achado 1, atualização 2026-07-29 do BACFF-014).
+# Parametrizável para não exigir alterar código quando a Orizon atualizar o
+# padrão aceito (mesmo racional de TISS_XSD_DIR acima).
+TISS_PADRAO_VERSAO_ORIZON = env('TISS_PADRAO_VERSAO_ORIZON', default='4.03.00')
+
 # Quando True, tiss/soap_client.py intercepta a chamada SOAP e devolve uma
 # resposta fixa (sucesso ou erro) em vez de bater na rede — permite testar
 # o fluxo completo de envio de lote sem credenciais/sandbox de operadora real.

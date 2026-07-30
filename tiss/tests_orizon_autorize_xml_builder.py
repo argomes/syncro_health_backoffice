@@ -1,10 +1,11 @@
 import uuid
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from clinics.models import Clinic
 from .models import TISSOperatorConfig, TISSGuia
 from .orizon_autorize_xml_builder import (
     build_solicitacao_procedimento_xml, OrizonAutorizeXMLBuilderError,
+    get_tiss_padrao_versao_orizon,
 )
 
 
@@ -46,9 +47,39 @@ class OrizonAutorizeXMLBuilderTests(TestCase):
         self.assertIn(f'<sch:hash>{hash_md5}</sch:hash>', xml)
         self.assertTrue(xml.startswith('<?xml version="1.0" encoding="UTF-8"?>'))
 
-    def test_versao_do_padrao_e_4_01_00_nao_4_02_00(self):
+    def test_versao_do_padrao_default_e_4_03_00_nao_hardcoded_em_4_01_00(self):
+        # BACFF-014 (achado 1, atualização 2026-07-29): versão não pode mais
+        # ficar hardcoded em 4.01.00 — default passa a ser 4.03.00, vindo de
+        # settings.TISS_PADRAO_VERSAO_ORIZON, não de constante fixa no módulo.
         xml, _ = build_solicitacao_procedimento_xml(self.guia, self.clinic, self.op, '1')
-        self.assertIn('<sch:Padrao>4.01.00</sch:Padrao>', xml)
+        self.assertIn('<sch:Padrao>4.03.00</sch:Padrao>', xml)
+        self.assertNotIn('<sch:Padrao>4.01.00</sch:Padrao>', xml)
+
+    @override_settings(TISS_PADRAO_VERSAO_ORIZON='4.02.00')
+    def test_versao_do_padrao_e_parametrizavel_via_settings(self):
+        # Confere que a versão vem de settings (não de constante fixa) —
+        # trocando o setting, o XML muda de acordo.
+        self.assertEqual(get_tiss_padrao_versao_orizon(), '4.02.00')
+        xml, _ = build_solicitacao_procedimento_xml(self.guia, self.clinic, self.op, '1')
+        self.assertIn('<sch:Padrao>4.02.00</sch:Padrao>', xml)
+
+    def test_indicacao_clinica_presente_no_xml(self):
+        # BACFF-014 (achado 2, 2026-07-29): elemento obrigatório pelo manual
+        # 4.03.00 (Cap. 10), filho de solicitacaoSP-SADT.
+        self.guia.indicacao_clinica = 'J06.9 - Infecção aguda das vias aéreas superiores'
+        self.guia.save()
+        xml, _ = build_solicitacao_procedimento_xml(self.guia, self.clinic, self.op, '1')
+        self.assertIn(
+            '<sch:indicacaoClinica>J06.9 - Infecção aguda das vias aéreas superiores</sch:indicacaoClinica>',
+            xml,
+        )
+
+    def test_indicacao_clinica_tem_placeholder_quando_ausente(self):
+        # Elemento é obrigatório pelo schema — nunca deve sair vazio, mesmo
+        # sem CID/indicação registrada na guia.
+        xml, _ = build_solicitacao_procedimento_xml(self.guia, self.clinic, self.op, '1')
+        self.assertIn('<sch:indicacaoClinica>', xml)
+        self.assertNotIn('<sch:indicacaoClinica></sch:indicacaoClinica>', xml)
 
     def test_login_senha_prestador_presente_com_senha_em_md5(self):
         import hashlib

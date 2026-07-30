@@ -498,6 +498,46 @@ class ResolucaoDeProviderTests(TestCase):
         self.assertEqual(lote.status, TISSLoteStatus.ERRO_ENVIO)
 
 
+@override_settings(TISS_SOAP_MOCK=True)
+class OrizonNumeroGuiaAvulsaTests(TestCase):
+    """
+    BACFF-014 (achado 3, atualização 2026-07-29): `verificar_cobertura` usava
+    o literal fixo 'ELEGIBILIDADE' como numeroGuiaPrestador em toda consulta
+    sem appointment_id — a Orizon nega automaticamente (Bradesco) uma
+    transação que reutiliza o mesmo número de guia. Confere que duas
+    chamadas consecutivas sem appointment_id geram números diferentes.
+    """
+
+    def setUp(self):
+        self.clinic = make_clinic()
+        self.op = make_config(self.clinic, TISSGatewayProvider.ORIZON)
+
+    def _numero_guia_usado(self):
+        with patch('tiss.providers.orizon.orizon_solicitar_autorizacao') as mock_solicitar:
+            from tiss.orizon_autorize_client import AutorizacaoResult, SituacaoAutorizacao
+            mock_solicitar.return_value = AutorizacaoResult(
+                situacao=SituacaoAutorizacao.AUTORIZADO,
+                numero_guia_operadora='OP-1', codigo_glosa='', descricao_glosa='', raw_response='',
+            )
+            consultar_elegibilidade_automatica(
+                self.clinic, self.op, numero_carteira='999', appointment_id='',
+            )
+            xml_enviado = mock_solicitar.call_args.kwargs['xml_solicitacao']
+        from lxml import etree
+        doc = etree.fromstring(xml_enviado.encode('utf-8'))
+        el = doc.find('.//{*}numeroGuiaPrestador')
+        return el.text
+
+    def test_numero_guia_prestador_nunca_e_o_literal_fixo_eleghibilidade(self):
+        numero = self._numero_guia_usado()
+        self.assertNotEqual(numero, 'ELEGIBILIDADE')
+
+    def test_duas_chamadas_consecutivas_sem_appointment_id_geram_numeros_diferentes(self):
+        numero_1 = self._numero_guia_usado()
+        numero_2 = self._numero_guia_usado()
+        self.assertNotEqual(numero_1, numero_2)
+
+
 # ---------------------------------------------------------------------------
 # §8.3 — ANTI-VAZAMENTO DE PII (BLOQUEANTE DE MERGE)
 # ---------------------------------------------------------------------------
@@ -559,6 +599,45 @@ class AntiVazamentoPIITests(TestCase):
             'xml_enviado', 'xml_recebido', 'erro_mensagem', 'raw_response', 'detail',
         }
         self.assertEqual(campos & proibidos, set())
+
+
+class VersaoOrizonNaoHardcodedTests(TestCase):
+    """
+    BACFF-014 (achado 1 / critério de aceite, atualização 2026-07-29): grep
+    de confirmação de que a versão/endpoint do padrão TISS da Orizon não
+    está mais hardcoded em '4.01.00'/'v40100' em código executável do
+    módulo `tiss` — só é permitido aparecer em docstrings/comentários
+    (histórico, nome do PDF fonte) ou em fixtures de teste (dado de
+    configuração, não lógica).
+    """
+
+    def test_grep_4_01_00_e_v40100_como_valor_de_codigo_executavel(self):
+        """
+        Só reprova padrões que são de fato ATRIBUIÇÃO/LITERAL de código
+        (`= '4.01.00'`, `/tiss/v40100/` dentro de string) — não texto livre
+        de docstring/comentário explicando o histórico do achado (que
+        legitimamente cita '4.01.00' ao narrar o que foi corrigido).
+        """
+        import pathlib
+        import re
+
+        raiz = pathlib.Path(__file__).parent
+        padroes_proibidos = [
+            re.compile(r"""=\s*['"]4\.01\.00['"]"""),
+            re.compile(r"""/tiss/v40100/"""),
+        ]
+        ocorrencias = []
+        for arquivo in raiz.glob('*.py'):
+            if arquivo.name.startswith('test') or 'tests_' in arquivo.name:
+                continue
+            texto = arquivo.read_text(encoding='utf-8')
+            for numero_linha, linha in enumerate(texto.splitlines(), start=1):
+                if any(p.search(linha) for p in padroes_proibidos):
+                    ocorrencias.append(f'{arquivo.name}:{numero_linha}: {linha.strip()}')
+        self.assertEqual(
+            ocorrencias, [],
+            f'Versão/endpoint 4.01.00/v40100 ainda hardcoded em código: {ocorrencias}',
+        )
 
 
 # ---------------------------------------------------------------------------
