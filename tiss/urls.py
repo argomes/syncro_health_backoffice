@@ -6,6 +6,7 @@ from .views import (
     verificar_elegibilidade, registrar_elegibilidade_manual_view, cancelar_guia_view,
     procedure_code_lookup, insurance_operator_lookup,
     procedure_code_search, insurance_operator_search,
+    sync_documentos_pendentes, sync_documentos_assinatura,
 )
 
 router = DefaultRouter()
@@ -18,6 +19,10 @@ urlpatterns = [
     # BACFF-013: consumidas pelo Edge Gateway (license_key), não pela UI do backoffice.
     path('elegibilidade/verificar/', verificar_elegibilidade, name='tiss_elegibilidade_verificar'),
     path('elegibilidade/manual/', registrar_elegibilidade_manual_view, name='tiss_elegibilidade_manual'),
+    # TASK-BO-10: consumidas pelo SyncWorker do gateway (X-License-Key), pull/push
+    # de fragmentos/assinatura XMLDSig de envioDocumentoWS (Orizon).
+    path('xmldsig/sync/pendentes/', sync_documentos_pendentes, name='tiss_xmldsig_sync_pendentes'),
+    path('xmldsig/sync/assinatura/', sync_documentos_assinatura, name='tiss_xmldsig_sync_assinatura'),
     # BACFF-014 (2026-07-30): gatilho de cancelamento automático de guia — consumido pelo Edge Gateway (license_key).
     path('guias/cancelar/', cancelar_guia_view, name='tiss_guia_cancelar'),
     # EDGW-013: fonte de verdade das tabelas de referência (cache-aside no gateway).

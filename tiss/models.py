@@ -3,6 +3,7 @@ import uuid
 
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from clinics.models import Clinic
 from .crypto import encrypt_credential, decrypt_credential
@@ -636,6 +637,135 @@ class TUSSProcedureCode(models.Model):
 
     def __str__(self):
         return f'{self.tuss_code} — {self.description}'
+
+
+class TISSDocumentoAssinaturaStatus(models.TextChoices):
+    """
+    TASK-BO-10 — ciclo de vida do envio assíncrono de `envioDocumentoWS`
+    (única operação Orizon que exige assinatura XMLDSig; ver
+    `tiss/orizon_envio_documento_xml_builder.py`).
+    """
+    PENDENTE_ASSINATURA = 'pendente_assinatura', 'Pendente de assinatura (aguardando gateway)'
+    ASSINADO = 'assinado', 'Assinado (bloco recebido, pronto para transmitir)'
+    ENVIADO = 'enviado', 'Enviado (protocolo recebido da operadora)'
+    ERRO_ENVIO = 'erro_envio', 'Erro no envio'
+
+
+class TISSDocumentoAssinatura(models.Model):
+    """
+    TASK-BO-10 — fila de assinatura XMLDSig para `envioDocumentoWS` (Orizon).
+    O certificado .p12 (A1, ICP-Brasil) NUNCA sai do gateway local da clínica
+    (decisão de arquitetura fechada) — este registro só coordena o handoff:
+
+    1. Backoffice monta o fragmento e canonicaliza (C14N) até o ponto da
+       assinatura, SEM o bloco <Signature> — `fragmento_canonico` guarda esse
+       resultado como STRING/bytes já formatados (produzido uma única vez por
+       `orizon_envio_documento_xml_builder.build_envio_documento_fragment`).
+       Status nasce em PENDENTE_ASSINATURA.
+    2. Gateway (SyncWorker, lado Go — EDGW-073, fora desta task) puxa esse
+       fragmento via GET de sync (`tiss/views.py::sync_documentos_pendentes`),
+       assina localmente e devolve, no push seguinte, só o bloco de assinatura
+       (SignedInfo/SignatureValue/KeyInfo) via POST de sync
+       (`sync_documentos_assinatura`).
+    3. `aplicar_bloco_assinatura` reinsere esse bloco em `fragmento_canonico`
+       por CONCATENAÇÃO/INSERÇÃO TEXTUAL — nunca reparseia nem re-serializa o
+       fragmento com uma lib de XML. Isso é crítico: C14N pode produzir bytes
+       diferentes numa segunda passada (ordenação de atributos, whitespace),
+       o que invalidaria a assinatura. `xml_final` é o resultado, e o teste
+       `tests_xmldsig_c14n_integridade.py` prova que os bytes de
+       `fragmento_canonico` permanecem idênticos dentro de `xml_final` depois
+       dessa inserção (critério de aceite formal da task).
+    4. Transmitido via `tiss/soap_client.py::enviar_documento` (mesmo client
+       de BO-08/BO-09, sem client SOAP novo).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(Clinic, on_delete=models.PROTECT, related_name='tiss_documentos_assinatura')
+    guia = models.ForeignKey(TISSGuia, on_delete=models.PROTECT, related_name='documentos_assinatura')
+    operator_config = models.ForeignKey(
+        TISSOperatorConfig, on_delete=models.PROTECT, related_name='documentos_assinatura',
+    )
+
+    status = models.CharField(
+        max_length=20, choices=TISSDocumentoAssinaturaStatus,
+        default=TISSDocumentoAssinaturaStatus.PENDENTE_ASSINATURA,
+    )
+
+    # Fragmento canônico (C14N) SEM <Signature> — string exata que o gateway
+    # deve assinar. Nunca reparsear/re-serializar depois de gravado.
+    fragmento_canonico = models.TextField()
+    root_tag = models.CharField(
+        max_length=100,
+        help_text='Nome qualificado da tag raiz (ex.: sch:envioDocumentoWS) — usado só para achar o ponto de inserção textual do bloco de assinatura, nunca para reparsear o fragmento.',
+    )
+    sequencial_transacao = models.CharField(max_length=20, blank=True)
+
+    # Bloco <Signature>...</Signature> devolvido pelo gateway (texto puro,
+    # nunca contém o certificado nem a chave privada — só SignedInfo/
+    # SignatureValue/KeyInfo).
+    signature_block = models.TextField(blank=True)
+
+    # fragmento_canonico com signature_block inserido por texto — é isto que
+    # de fato vai para soap_client.enviar_documento. Nunca é o resultado de
+    # reparsear+serializar fragmento_canonico.
+    xml_final = models.TextField(blank=True)
+
+    protocolo = models.CharField(max_length=20, blank=True)
+    erro_mensagem = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    assinado_at = models.DateTimeField(null=True, blank=True)
+    enviado_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Documento TISS pendente de assinatura (XMLDSig)'
+        verbose_name_plural = 'Documentos TISS pendentes de assinatura (XMLDSig)'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['clinic', 'status']),
+        ]
+
+    def __str__(self):
+        return f'Documento {self.guia.numero} — {self.clinic.name} ({self.status})'
+
+    def clean(self):
+        if self.clinic_id and self.guia_id and self.guia.clinic_id != self.clinic_id:
+            raise ValidationError('guia pertence a outra clínica — violação de isolamento multi-tenant')
+        if self.clinic_id and self.operator_config_id and self.operator_config.clinic_id != self.clinic_id:
+            raise ValidationError('operator_config pertence a outra clínica — violação de isolamento multi-tenant')
+
+    def aplicar_bloco_assinatura(self, signature_block: str) -> None:
+        """
+        Reinsere `signature_block` (recebido do gateway) dentro de
+        `fragmento_canonico` por INSERÇÃO TEXTUAL — nunca via etree.parse +
+        etree.tostring, que invalidaria a assinatura (C14N não é
+        necessariamente idempotente byte-a-byte entre duas serializações).
+
+        Insere imediatamente antes da tag de fechamento da raiz
+        (`</{root_tag}>`), que é a única ocorrência exata dessa string no
+        documento (fragmento sem <Signature> é bem-formado e a raiz só tem
+        uma tag de fechamento com esse nome completo).
+        """
+        if self.status != TISSDocumentoAssinaturaStatus.PENDENTE_ASSINATURA:
+            raise ValidationError(f'documento não está pendente de assinatura (status={self.status})')
+        if not signature_block or '<Signature' not in signature_block:
+            raise ValidationError('signature_block_invalido')
+
+        closing_tag = f'</{self.root_tag}>'
+        if self.fragmento_canonico.count(closing_tag) != 1:
+            raise ValidationError('fragmento_canonico_sem_ponto_de_insercao_unico')
+
+        xml_final = self.fragmento_canonico.replace(
+            closing_tag, f'{signature_block}{closing_tag}', 1,
+        )
+
+        self.signature_block = signature_block
+        self.xml_final = xml_final
+        self.status = TISSDocumentoAssinaturaStatus.ASSINADO
+        self.assinado_at = timezone.now()
+        self.save(update_fields=[
+            'signature_block', 'xml_final', 'status', 'assinado_at', 'updated_at',
+        ])
 
 
 class ANSInsuranceOperator(models.Model):

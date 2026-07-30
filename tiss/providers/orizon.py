@@ -35,8 +35,16 @@ from ..orizon_autorize_xml_builder import (
     build_solicitacao_procedimento_xml, build_cancelamento_guia_xml, OrizonAutorizeXMLBuilderError,
     get_tiss_padrao_versao_orizon,
 )
+from ..orizon_envio_documento_xml_builder import (
+    build_envio_documento_fragment, OrizonEnvioDocumentoXMLBuilderError,
+)
+from ..soap_client import (
+    enviar_documento as soap_enviar_documento_assinado, SOAPClientError,
+    SOAPSuccessResult, SOAPFaultResult,
+)
 from .base import (
-    CancelamentoResultado, ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
+    CancelamentoResultado, DocumentoAssinaturaFragmento, ElegibilidadeRespostaCompleta,
+    EnvioDocumentoAssinadoResultado, EnvioLoteResultado, OperacaoNaoSuportada,
     ProviderCapabilities, ProviderHealth,
 )
 from .health import wsdl_health_check
@@ -165,6 +173,61 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
     )
 
 
+def preparar_documento_assinatura(
+    guia, clinic, operator_config, sequencial_transacao: str,
+    documento_base64: str, nome_arquivo: str, tipo_documento: str = 'ANEXO',
+) -> DocumentoAssinaturaFragmento:
+    """
+    TASK-BO-10 — monta o fragmento `envioDocumentoWS` (a ÚNICA operação
+    Orizon que exige assinatura XMLDSig) e o canonicaliza (C14N), SEM
+    `<Signature>`. Quem grava o resultado em `TISSDocumentoAssinatura` é
+    `tiss/xmldsig_service.py` — este módulo, como os demais do contrato, não
+    persiste nada.
+    """
+    try:
+        fragmento_canonico, root_tag = build_envio_documento_fragment(
+            guia=guia, clinic=clinic, operator_config=operator_config,
+            sequencial_transacao=sequencial_transacao,
+            documento_base64=documento_base64, nome_arquivo=nome_arquivo,
+            tipo_documento=tipo_documento,
+        )
+    except OrizonEnvioDocumentoXMLBuilderError as exc:
+        raise OperacaoNaoSuportada(str(exc)) from exc
+
+    return DocumentoAssinaturaFragmento(fragmento_canonico=fragmento_canonico, root_tag=root_tag)
+
+
+def enviar_documento_assinado(
+    xml_final: str, operator_config, mock_scenario: str = 'success',
+) -> EnvioDocumentoAssinadoResultado:
+    """
+    TASK-BO-10 — transmite `TISSDocumentoAssinatura.xml_final` (já com o
+    bloco `<Signature>` reinserido por texto, nunca reparseado) via
+    `soap_client.enviar_documento` — mesmo client SOAP de BO-08/BO-09.
+    """
+    endpoint_url = operator_config.connection.endpoint_url
+    try:
+        resultado = soap_enviar_documento_assinado(endpoint_url, xml_final, mock_scenario=mock_scenario)
+    except SOAPClientError as exc:
+        return EnvioDocumentoAssinadoResultado(
+            sucesso=False, erro_code='soap_send_failed', erro_mensagem=str(exc),
+        )
+
+    if isinstance(resultado, SOAPSuccessResult):
+        return EnvioDocumentoAssinadoResultado(
+            sucesso=True, protocolo=resultado.protocolo, raw_response=resultado.raw_response,
+        )
+
+    if isinstance(resultado, SOAPFaultResult):
+        return EnvioDocumentoAssinadoResultado(
+            sucesso=False, erro_code='soap_fault',
+            erro_mensagem=f'{resultado.codigo_erro}: {resultado.descricao_erro}',
+            raw_response=resultado.raw_response,
+        )
+
+    return EnvioDocumentoAssinadoResultado(sucesso=False, erro_code='resposta_soap_inesperada')
+
+
 _MOCK_SCENARIO_MAP_CANCELAMENTO = {
     'success': 'cancelado',
     'negativa': 'nao_cancelado',
@@ -240,6 +303,8 @@ def capabilities() -> ProviderCapabilities:
         cobertura=True,
         # Fature ainda não implementado (D4).
         envio_lote=False,
+        # TASK-BO-10: envioDocumentoWS assinado (XMLDSig) — implementado.
+        envio_documento_assinado=True,
         # O manual documenta solicitacaoStatusAutorizacao para o estado "Em
         # Análise" (polling >= 30min). O client ainda não implementa a
         # operação, então False: capability declara o que ESTE código faz,

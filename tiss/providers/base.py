@@ -265,6 +265,35 @@ class ProviderHealth:
     detail: str = ''
 
 
+@dataclass
+class DocumentoAssinaturaFragmento:
+    """
+    TASK-BO-10 — retorno normalizado de `provider.preparar_documento_assinatura`:
+    o fragmento C14N (sem `<Signature>`) que a fila de assinatura XMLDSig
+    (`tiss/xmldsig_service.py`) grava em `TISSDocumentoAssinatura.fragmento_canonico`
+    e que o gateway da clínica deve assinar. `root_tag` é usado só para achar
+    o ponto de inserção textual do bloco de assinatura depois — nunca para
+    reparsear o fragmento.
+    """
+    fragmento_canonico: str
+    root_tag: str
+
+
+@dataclass
+class EnvioDocumentoAssinadoResultado:
+    """
+    TASK-BO-10 — retorno normalizado de `provider.enviar_documento_assinado`
+    (transmissão do XML já assinado, `TISSDocumentoAssinatura.xml_final`).
+    Mesmo espírito de `EnvioLoteResultado`: o provider NUNCA levanta exceção
+    de transporte, devolve `sucesso=False` com `erro_code` preenchido.
+    """
+    sucesso: bool
+    protocolo: str = ''
+    raw_response: str = ''
+    erro_code: str = ''
+    erro_mensagem: str = ''
+
+
 @dataclass(frozen=True)
 class ProviderCapabilities:
     """
@@ -285,6 +314,9 @@ class ProviderCapabilities:
     envio_lote: bool = False
     consulta_status: bool = False
     cancelamento_guia: bool = False
+    # TASK-BO-10: envioDocumentoWS assinado (XMLDSig) — só a Orizon confirma
+    # hoje. Distinto de `envio_lote` (loteGuiasWS/Fature, sem assinatura).
+    envio_documento_assinado: bool = False
     versoes_padrao_suportadas: tuple = ()
     exige_credenciais: bool = False
     confirmado_em_homologacao: bool = False
@@ -295,6 +327,7 @@ class ProviderCapabilities:
             'envio_lote': self.envio_lote,
             'consulta_status': self.consulta_status,
             'cancelamento_guia': self.cancelamento_guia,
+            'envio_documento_assinado': self.envio_documento_assinado,
             'versoes_padrao_suportadas': list(self.versoes_padrao_suportadas),
             'exige_credenciais': self.exige_credenciais,
             'confirmado_em_homologacao': self.confirmado_em_homologacao,

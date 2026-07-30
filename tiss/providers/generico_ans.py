@@ -169,6 +169,23 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
     )
 
 
+def preparar_documento_assinatura(guia, clinic, operator_config, sequencial_transacao,
+                                   documento_base64, nome_arquivo, tipo_documento='ANEXO'):
+    """
+    TASK-BO-10: `envioDocumentoWS` assinado (XMLDSig) não está implementado
+    para o dialeto genérico ANS — só a Orizon confirma esta operação hoje.
+    """
+    raise OperacaoNaoSuportada(
+        'Envio de documento assinado (XMLDSig) não está implementado para o provider genérico ANS.'
+    )
+
+
+def enviar_documento_assinado(xml_final, operator_config, mock_scenario='success'):
+    raise OperacaoNaoSuportada(
+        'Envio de documento assinado (XMLDSig) não está implementado para o provider genérico ANS.'
+    )
+
+
 def cancelar_guia(clinic, operator_config, guia, mock_scenario='success') -> CancelamentoResultado:
     """
     `tissCancelaGuia` existe no padrão ANS publicado, mas não há client de

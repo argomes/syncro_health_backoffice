@@ -47,6 +47,16 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success'):
     raise ProviderNaoConfirmado(_MENSAGEM)
 
 
+def preparar_documento_assinatura(guia, clinic, operator_config, sequencial_transacao,
+                                   documento_base64, nome_arquivo, tipo_documento='ANEXO'):
+    """TASK-BO-10 — mesmo bloqueio de D3: dialeto não confirmado, nunca tentado."""
+    raise ProviderNaoConfirmado(_MENSAGEM)
+
+
+def enviar_documento_assinado(xml_final, operator_config, mock_scenario='success'):
+    raise ProviderNaoConfirmado(_MENSAGEM)
+
+
 def cancelar_guia(clinic, operator_config, guia, mock_scenario='success'):
     raise ProviderNaoConfirmado(_MENSAGEM)
 

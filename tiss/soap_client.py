@@ -346,6 +346,39 @@ def verificar_elegibilidade(endpoint_url: str, xml_mensagem_tiss: str, mock_scen
     return _parse_elegibilidade_response(resp.text)
 
 
+def enviar_documento(endpoint_url: str, xml_mensagem_tiss: str, mock_scenario: str = 'success'):
+    """
+    TASK-BO-10 — Envia `envioDocumentoWS` (já assinado — `xml_mensagem_tiss`
+    é o `TISSDocumentoAssinatura.xml_final`, com o bloco `<Signature>`
+    reinserido por texto, nunca reparseado/re-serializado) via SOAP 1.1.
+    Mesmo client de BO-08/BO-09 (`_build_envelope`/`_parse_response`) — só a
+    `operation` do envelope muda; a resposta usa o MESMO formato de recibo
+    (`reciboDocumentosWS`/`recebimentoDocumento`) que `enviar_lote`, então o
+    parser é reaproveitado sem alteração.
+    """
+    if _is_mock_enabled():
+        mock_responses = {
+            'success': MOCK_SUCCESS_RESPONSE,
+            'glosa': MOCK_GLOSA_RESPONSE,
+        }
+        raw = mock_responses.get(mock_scenario, MOCK_ERROR_RESPONSE)
+        logger.info('soap_client: modo mock ativo (TISS_SOAP_MOCK=true), envioDocumentoWS cenário=%s', mock_scenario)
+        return _parse_response(raw)
+
+    envelope = _build_envelope(xml_mensagem_tiss, operation='envioDocumentoWS')
+    headers = {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': '""',
+    }
+    try:
+        resp = httpx.post(endpoint_url, content=envelope.encode('utf-8'), headers=headers, timeout=DEFAULT_TIMEOUT)
+    except httpx.HTTPError as exc:
+        logger.error('soap_client: falha de rede ao chamar envioDocumentoWS: %s', type(exc).__name__)
+        raise SOAPClientError('soap_network_error') from exc
+
+    return _parse_response(resp.text)
+
+
 def enviar_lote(endpoint_url: str, xml_mensagem_tiss: str, mock_scenario: str = 'success'):
     """
     Envia o XML montado via SOAP 1.1. Se TISS_SOAP_MOCK=true, intercepta e
