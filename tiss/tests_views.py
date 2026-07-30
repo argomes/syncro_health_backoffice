@@ -104,6 +104,43 @@ class TISSOperatorConfigSerializerIntegracaoAutomaticaTests(APITestCase):
         self.assertFalse(data['integracao_automatica'])
 
 
+class TISSOperatorConfigViewSetIntegracaoAutomaticaHttpTests(APITestCase):
+    """
+    Teste de contrato HTTP fim-a-fim: confirma que `integracao_automatica`
+    chega de fato no JSON do endpoint real (GET /api/tiss/operadoras/{id}/),
+    não só quando o serializer é instanciado diretamente em memória.
+    """
+
+    def setUp(self):
+        self.clinic = _make_clinic('http-integracao-automatica')
+        self.admin_user = SupportUser.objects.create_user(
+            username='admin-http-integracao', password='x', role=SupportUser.Role.ADMIN,
+        )
+        self.client.force_authenticate(user=self.admin_user)
+
+    def test_endpoint_real_retorna_true_para_orizon_ativo(self):
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Orizon', registro_ans='333333',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=True,
+        )
+        resp = self.client.get(f'/api/tiss/operadoras/{op.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['gateway_provider'], 'orizon')
+        self.assertTrue(resp.data['integracao_automatica'])
+
+    def test_endpoint_real_retorna_false_para_orizon_desativado(self):
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Orizon', registro_ans='444444',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=False,
+        )
+        resp = self.client.get(f'/api/tiss/operadoras/{op.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['gateway_provider'], 'orizon')
+        self.assertFalse(resp.data['integracao_automatica'])
+
+
 class TISSGuiaViewSetIsolationTests(APITestCase):
     def setUp(self):
         self.clinic_a = _make_clinic('vs-isolamento-a')
