@@ -28,7 +28,7 @@ from .models import (
 )
 from .providers.base import CancelamentoResultado, OperacaoNaoSuportada, ProviderNaoConfirmado
 from .services import disparar_cancelamento_guia
-from .tasks import cancelar_guia_task, _tratar_falha
+from .tasks import cancelar_guia_task, _tratar_falha, NON_TRANSIENT_ERROR_CODES
 
 
 def _make_clinic():
@@ -257,3 +257,221 @@ class CancelarGuiaViewTests(TestCase):
             HTTP_X_LICENSE_KEY=str(self.clinic.license_key),
         )
         self.assertEqual(response.status_code, 404)
+
+
+@override_settings(TISS_SOAP_MOCK=True, CELERY_TASK_ALWAYS_EAGER=True)
+class CancelamentoGuiaSemAutorizacaoTests(TestCase):
+    """
+    QA (2026-07-29), cenário de borda 1: cancelamento disparado para um
+    atendimento que NUNCA teve guia Orizon emitida — deve ser no-op, sem
+    criar `TISSCancelamentoPendente`. Reforça o que já é coberto em
+    `DispararCancelamentoGuiaServiceTests`, mas aqui a partir do estado
+    "nem existe guia com lote" (nunca chegou a ter operator_config).
+    """
+
+    def setUp(self):
+        self.clinic = _make_clinic()
+
+    def test_guia_sem_lote_nunca_enviada_nao_dispara_task_nem_cria_pendente(self):
+        guia = _make_guia(self.clinic, operator_config=None, status=TISSGuiaStatus.NAO_ENVIADA)
+        with patch('tiss.tasks.cancelar_guia_task.delay') as mock_delay:
+            enfileirado = disparar_cancelamento_guia(guia)
+        self.assertFalse(enfileirado)
+        mock_delay.assert_not_called()
+        self.assertFalse(TISSCancelamentoPendente.objects.filter(guia=guia).exists())
+        guia.refresh_from_db()
+        self.assertEqual(guia.status, TISSGuiaStatus.CANCELADA)
+
+
+@override_settings(TISS_SOAP_MOCK=True)
+class CancelamentoGuiaConcorrenteTests(TestCase):
+    """
+    QA (2026-07-29), cenário de borda 2: dois disparos de cancelamento para
+    a MESMA guia (ex.: dupla submissão do Edge Gateway, ou reentrega do
+    broker). O ponto de idempotência que o sistema garante hoje é: nunca
+    mais de um `TISSCancelamentoPendente` por guia (`get_or_create(guia=...)`
+    em `_tratar_falha`) e, no caminho feliz, a guia fica `CANCELADA`
+    independente de quantas vezes a task rodou.
+    """
+
+    def setUp(self):
+        self.clinic = _make_clinic()
+        self.op = _make_config(self.clinic, TISSGatewayProvider.ORIZON)
+        self.guia = _make_guia(self.clinic, self.op, status=TISSGuiaStatus.ENVIADA)
+
+    def test_duas_execucoes_da_task_para_a_mesma_guia_convergem_sem_duplicar_pendente(self):
+        # Simula concorrência: a task roda duas vezes para a mesma guia_id
+        # (ex.: `disparar_cancelamento_guia` chamado duas vezes antes da
+        # primeira mensagem ser confirmada). Ambas as execuções tentam
+        # cancelar — mockamos a segunda para vir com a resposta de negócio
+        # que a Orizon dá quando já processou o cancelamento.
+        cancelar_guia_task.apply(args=[str(self.guia.id)])
+        self.guia.refresh_from_db()
+        self.assertEqual(self.guia.status, TISSGuiaStatus.CANCELADA)
+
+        with patch('tiss.providers.orizon.cancelar_guia') as mock_cancelar:
+            mock_cancelar.return_value = CancelamentoResultado(
+                sucesso=False, erro_code='guia_nao_cancelada',
+                erro_mensagem='orizon_recusou_cancelamento',
+            )
+            cancelar_guia_task.apply(args=[str(self.guia.id)])
+
+        # Não duplica o registro de pendência — no máximo um por guia.
+        self.assertEqual(TISSCancelamentoPendente.objects.filter(guia=self.guia).count(), 1)
+        # A guia permanece cancelada do lado da clínica (decisão já tomada
+        # antes da task rodar, em `disparar_cancelamento_guia`).
+        self.guia.refresh_from_db()
+        self.assertEqual(self.guia.status, TISSGuiaStatus.CANCELADA)
+
+    def test_chamar_tratar_falha_duas_vezes_para_a_mesma_guia_atualiza_em_vez_de_duplicar(self):
+        task = MagicMock()
+        task.request.retries = 3
+        task.max_retries = 3
+
+        _tratar_falha(task, self.guia, self.op, 'primeira falha')
+        _tratar_falha(task, self.guia, self.op, 'segunda falha (execução concorrente)')
+
+        self.assertEqual(TISSCancelamentoPendente.objects.filter(guia=self.guia).count(), 1)
+        pendente = TISSCancelamentoPendente.objects.get(guia=self.guia)
+        self.assertEqual(pendente.ultimo_erro, 'segunda falha (execução concorrente)')
+
+
+@override_settings(TISS_SOAP_MOCK=True)
+class CancelarGuiaErroTransitorioVsNegocioTests(TestCase):
+    """
+    QA (2026-07-29), cenário de borda 3 e 4: (3) falha nas tentativas 1/2
+    seguida de sucesso na 3ª — resolve sem alerta; (4) resposta SOAP
+    malformada/timeout (falha de TRANSPORTE, transitória, vale re-tentar)
+    vs. resposta SOAP válida com recusa de NEGÓCIO (guia já cancelada / guia
+    inexistente — a operadora respondeu, retry não muda o resultado). Bug
+    real corrigido nesta rodada: antes, `_tratar_falha` tratava os dois
+    casos como idênticos e gastava as 3 tentativas de retry mesmo em erro de
+    negócio definitivo, atrasando em minutos o suporte perceber que precisa
+    agir manualmente.
+    """
+
+    def setUp(self):
+        self.clinic = _make_clinic()
+        self.op = _make_config(self.clinic, TISSGatewayProvider.ORIZON)
+        self.guia = _make_guia(self.clinic, self.op, status=TISSGuiaStatus.ENVIADA)
+
+    def _fake_task(self, retries=0, max_retries=3):
+        task = MagicMock()
+        task.request.retries = retries
+        task.max_retries = max_retries
+        task.retry.side_effect = Exception('retry-agendado')
+        return task
+
+    def test_erro_de_rede_e_transitorio_e_faz_retry_mesmo_na_primeira_tentativa(self):
+        task = self._fake_task(retries=0)
+        with self.assertRaises(Exception):
+            _tratar_falha(task, self.guia, self.op, 'timeout', transitorio=True)
+        task.retry.assert_called_once()
+        self.assertFalse(TISSCancelamentoPendente.objects.filter(guia=self.guia).exists())
+
+    def test_erro_de_negocio_guia_nao_cancelada_nao_faz_retry_mesmo_na_primeira_tentativa(self):
+        task = self._fake_task(retries=0)
+        _tratar_falha(task, self.guia, self.op, 'orizon_recusou_cancelamento', transitorio=False)
+        task.retry.assert_not_called()
+
+        pendente = TISSCancelamentoPendente.objects.get(guia=self.guia)
+        self.assertTrue(pendente.falhou_apos_retries)
+        self.assertEqual(pendente.tentativas, 1)
+        self.assertFalse(pendente.resolvido)
+
+    def test_soap_fault_de_negocio_tambem_nao_gasta_retries(self):
+        task = self._fake_task(retries=0)
+        _tratar_falha(task, self.guia, self.op, 'guia_nao_encontrada: 404', transitorio=False)
+        task.retry.assert_not_called()
+        self.assertEqual(TISSCancelamentoPendente.objects.get(guia=self.guia).tentativas, 1)
+
+    def test_task_completa_classifica_guia_nao_cancelada_como_nao_transitorio_via_mock(self):
+        with patch('tiss.providers.orizon.cancelar_guia') as mock_cancelar:
+            mock_cancelar.return_value = CancelamentoResultado(
+                sucesso=False, erro_code='guia_nao_cancelada', erro_mensagem='orizon_recusou_cancelamento',
+            )
+            # `.apply()` roda a task síncrona; erro de negócio não deve
+            # levantar `Retry` do Celery — deve retornar normalmente após
+            # criar o alerta já na 1ª tentativa.
+            cancelar_guia_task.apply(args=[str(self.guia.id)])
+
+        pendente = TISSCancelamentoPendente.objects.get(guia=self.guia)
+        self.assertTrue(pendente.falhou_apos_retries)
+        self.assertEqual(pendente.tentativas, 1)
+
+    def test_task_completa_com_erro_de_rede_esgota_3_retries_antes_do_alerta(self):
+        # `.apply()` executa `self.retry()` sincronamente (sem broker real),
+        # então a chamada síncrona já "consome" as 3 tentativas antes de
+        # retornar — diferente do caminho de negócio, que cria o alerta já
+        # na 1ª tentativa (ver teste acima). O que distingue os dois casos
+        # é `pendente.tentativas`: 4 aqui (esgotou retry) vs. 1 no de negócio.
+        with patch('tiss.providers.orizon.cancelar_guia') as mock_cancelar:
+            mock_cancelar.return_value = CancelamentoResultado(
+                sucesso=False, erro_code='soap_network_error', erro_mensagem='timeout',
+            )
+            cancelar_guia_task.apply(args=[str(self.guia.id)])
+
+        pendente = TISSCancelamentoPendente.objects.get(guia=self.guia)
+        self.assertTrue(pendente.falhou_apos_retries)
+        self.assertEqual(pendente.tentativas, 4)
+        self.assertEqual(mock_cancelar.call_count, 4)
+
+    def test_retry_apos_1_e_2_falhas_transitorias_resolve_na_3a_sem_criar_alerta(self):
+        # Reproduz a sequência de tentativas manualmente controlando
+        # `task.request.retries`, sem depender do agendador real do Celery
+        # (mesmo padrão de `TratarFalhaRetryEAlertaTests`).
+        for tentativa in (0, 1):
+            task = self._fake_task(retries=tentativa)
+            with self.assertRaises(Exception):
+                _tratar_falha(task, self.guia, self.op, 'timeout transitório', transitorio=True)
+            task.retry.assert_called_once()
+        self.assertFalse(TISSCancelamentoPendente.objects.filter(guia=self.guia).exists())
+
+        # 3ª tentativa: sucesso — a task real marcaria a guia CANCELADA e
+        # nunca chamaria `_tratar_falha`; aqui confirmamos que nenhum
+        # alerta ficou para trás do caminho de falha anterior.
+        from .models import TISSGuia
+        TISSGuia.objects.filter(pk=self.guia.pk).update(status=TISSGuiaStatus.CANCELADA)
+        self.guia.refresh_from_db()
+        self.assertEqual(self.guia.status, TISSGuiaStatus.CANCELADA)
+        self.assertFalse(TISSCancelamentoPendente.objects.filter(guia=self.guia).exists())
+
+
+@override_settings(TISS_SOAP_MOCK=True)
+class TISSCancelamentoPendenteAdminResolvidoTests(TestCase):
+    """
+    QA (2026-07-29), cenário de borda 5: `resolvido` precisa ser marcável
+    manualmente pelo suporte no Django Admin (não é `readonly_fields`, ao
+    contrário dos demais campos do model).
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        self.clinic = _make_clinic()
+        self.op = _make_config(self.clinic, TISSGatewayProvider.ORIZON)
+        self.guia = _make_guia(self.clinic, self.op, status=TISSGuiaStatus.ENVIADA)
+        self.pendente = TISSCancelamentoPendente.objects.create(
+            clinic=self.clinic, guia=self.guia, tentativas=4,
+            falhou_apos_retries=True, ultimo_erro='timeout', resolvido=False,
+        )
+        User = get_user_model()
+        self.staff = User.objects.create_superuser(
+            username=f'suporte-{uuid.uuid4().hex[:8]}', email='suporte@syncrohealth.test', password='senha-teste-123',
+        )
+        self.client = APIClient()
+        self.client.force_login(self.staff)
+
+    def test_resolvido_nao_e_readonly_no_admin(self):
+        from .admin import TISSCancelamentoPendenteAdmin
+        self.assertNotIn('resolvido', TISSCancelamentoPendenteAdmin.readonly_fields)
+        self.assertIn('resolvido', TISSCancelamentoPendenteAdmin.fields)
+
+    def test_marcar_resolvido_via_admin_persiste(self):
+        url = f'/admin/tiss/tisscancelamentopendente/{self.pendente.id}/change/'
+        response = self.client.post(url, {
+            'resolvido': 'on',
+        }, follow=True)
+        self.assertIn(response.status_code, (200, 302))
+        self.pendente.refresh_from_db()
+        self.assertTrue(self.pendente.resolvido)
