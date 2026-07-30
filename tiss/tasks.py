@@ -90,7 +90,7 @@ def _tratar_falha(task, guia, operator_config, erro_mensagem: str, transitorio: 
     tentativa: reenfileirar não muda a resposta da operadora, só atrasa o
     suporte perceber que precisa agir manualmente.
     """
-    from .models import TISSCancelamentoPendente
+    from .models import TISSCancelamentoPendente, sanitizar_erro_operadora
 
     if transitorio and task.request.retries < task.max_retries:
         logger.warning(
@@ -117,6 +117,10 @@ def _tratar_falha(task, guia, operator_config, erro_mensagem: str, transitorio: 
     )
     pendente.tentativas = task.request.retries + 1
     pendente.falhou_apos_retries = True
-    pendente.ultimo_erro = erro_mensagem
+    # Segurança/LGPD (BACFF-014, revisão 2026-07-30): `erro_mensagem` pode
+    # conter `descricaoErro` bruto devolvido pela Orizon (texto livre de
+    # sistema externo) — sanitiza antes de persistir/expor no Django Admin.
+    # Ver `models.sanitizar_erro_operadora`.
+    pendente.ultimo_erro = sanitizar_erro_operadora(erro_mensagem)
     pendente.resolvido = False
     pendente.save(update_fields=['tentativas', 'falhou_apos_retries', 'ultimo_erro', 'resolvido', 'updated_at'])

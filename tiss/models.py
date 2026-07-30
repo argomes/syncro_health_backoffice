@@ -1,3 +1,4 @@
+import re
 import uuid
 
 from django.db import models
@@ -323,6 +324,38 @@ def mascarar_numero_carteira(valor: str) -> str:
     return f'****{valor[-4:]}' if len(valor) > 4 else '****'
 
 
+_CPF_RE = re.compile(r'\d{3}\.?\d{3}\.?\d{3}-?\d{2}')
+_CARTEIRA_OU_CNS_RE = re.compile(r'\b\d{8,20}\b')
+_ULTIMO_ERRO_MAX_LEN = 500
+
+
+def sanitizar_erro_operadora(mensagem: str) -> str:
+    """
+    BACFF-014 (revisão de segurança, 2026-07-30) — `ultimo_erro` em
+    `TISSCancelamentoPendente` guarda texto de erro que pode se originar de
+    um `<sch:descricaoErro>` DEVOLVIDO PELA PRÓPRIA ORIZON (ver
+    `providers/orizon.py::cancelar_guia`, ramo `SOAPFaultResult`) — texto
+    livre de um sistema externo que não controlamos, exibido em texto puro
+    no Django Admin (`TISSCancelamentoPendenteAdmin`, readonly). Diferente
+    dos códigos internos (`soap_network_error`, `guia_nao_cancelada`, etc.),
+    não há garantia contratual de que a operadora nunca inclua dado de
+    beneficiário (CPF, nº carteirinha/CNS) numa mensagem de validação.
+
+    Melhor esforço, não perfeito: mascara padrões reconhecíveis de CPF e
+    sequências longas de dígitos (carteirinha/CNS) e limita o tamanho — não
+    tenta detectar nomes de pessoa (não há como fazer isso de forma
+    confiável com regex). Ainda assim reduz a superfície de PII estruturada
+    (CPF/carteirinha) que hoje era persistida sem qualquer tratamento.
+    """
+    if not mensagem:
+        return mensagem
+    sanitizado = _CPF_RE.sub('[cpf-mascarado]', mensagem)
+    sanitizado = _CARTEIRA_OU_CNS_RE.sub('[numero-mascarado]', sanitizado)
+    if len(sanitizado) > _ULTIMO_ERRO_MAX_LEN:
+        sanitizado = sanitizado[:_ULTIMO_ERRO_MAX_LEN] + '…[truncado]'
+    return sanitizado
+
+
 class TISSGuiaStatus(models.TextChoices):
     NAO_ENVIADA = 'nao_enviada', 'Não enviada'
     ENVIADA = 'enviada', 'Enviada'
@@ -407,7 +440,11 @@ class TISSCancelamentoPendente(models.Model):
         default=False,
         help_text='True quando as 3 tentativas de retry do Celery se esgotaram sem sucesso — precisa de ação manual.',
     )
-    # Técnica (código/motivo de falha) — nunca dado de beneficiário.
+    # Técnica (código/motivo de falha). Pode incluir texto livre devolvido
+    # pela operadora (`descricaoErro` de um SOAP fault) — sempre passar por
+    # `sanitizar_erro_operadora` antes de gravar aqui (ver `tasks.py::
+    # _tratar_falha`); não confiar apenas na convenção de não incluir PII,
+    # a operadora é um sistema externo fora do nosso controle.
     ultimo_erro = models.TextField(blank=True)
     resolvido = models.BooleanField(default=False, help_text='Marcar quando o suporte reconciliar manualmente com a operadora.')
 
