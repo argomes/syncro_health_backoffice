@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.http import HttpResponse
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 
 from syncro_backoffice.base_admin import BaseAdmin, TenantScopedAdminMixin
 from . import providers
@@ -45,11 +46,37 @@ class TISSOperatorConfigAdmin(TenantScopedAdminMixin, BaseAdmin):
     # Credencial/endpoint não moram mais aqui — ver `TISSOperatorConnectionAdmin`
     # acima. `connection` é editável (trocar qual conexão esta operadora usa),
     # mas a credencial em si só se edita na tela da Connection.
-    list_display = ('nome_operadora', 'registro_ans', 'clinic', 'connection', 'ativo', 'created_at')
+    list_display = (
+        'nome_operadora', 'registro_ans', 'clinic', 'connection', 'ativo',
+        'integracao_automatica_selo', 'created_at',
+    )
     list_filter = ('ativo', 'connection__gateway_provider')
     search_fields = ('nome_operadora', 'registro_ans', 'clinic__name')
-    readonly_fields = ('id', 'created_at', 'updated_at', 'capacidades', 'conexao')
+    readonly_fields = ('id', 'created_at', 'updated_at', 'capacidades', 'conexao', 'integracao_automatica_selo')
     actions = ['testar_conexao']
+
+    @admin.display(description='Integração', boolean=False)
+    def integracao_automatica_selo(self, obj):
+        """
+        BACFF-016 — selo visual para a clínica/suporte saberem, sem abrir a
+        config, se uma operadora dispara chamada automática de verdade
+        (Orizon ativo) ou depende de confirmação manual (todas as demais,
+        inclusive Orizon desativado). Valor fixo (nunca dado do usuário), sem
+        risco de XSS no `format_html`.
+        """
+        if not obj or not obj.pk:
+            return '—'
+        if obj.integracao_automatica:
+            # Valor 100% fixo (sem interpolação de dado do usuário) — seguro
+            # marcar como safe direto, sem risco de XSS.
+            return mark_safe(
+                '<span style="background:#2e7d32;color:#fff;padding:2px 8px;'
+                'border-radius:10px;font-size:11px;">Integração automática</span>'
+            )
+        return mark_safe(
+            '<span style="background:#e0e0e0;color:#333;padding:2px 8px;'
+            'border-radius:10px;font-size:11px;">Somente confirmação manual</span>'
+        )
 
     @admin.display(description='Capacidades do provider')
     def capacidades(self, obj):

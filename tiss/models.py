@@ -207,6 +207,21 @@ class TISSOperatorConfig(models.Model):
         return self.connection.gateway_provider
 
     @property
+    def integracao_automatica(self) -> bool:
+        """
+        BACFF-016: True somente quando a clínica pode contar com a chamada
+        automática de fato disparando contra a operadora — hoje, só o client
+        Orizon está implementado e homologado (ver `TISSGatewayProvider`
+        acima). `ativo=False` também bloqueia a chamada de negócio
+        (`services.py`), então uma config Orizon desativada não deve ostentar
+        o selo de integração automática: ela cairia no fallback manual do
+        mesmo jeito. Qualquer outro provider (inclusive `generico_ans` e
+        `desconhecido`) é sempre confirmação manual — nenhuma mudança na
+        lógica de despacho, só o que é EXPOSTO na API/admin.
+        """
+        return self.ativo and self.gateway_provider == TISSGatewayProvider.ORIZON
+
+    @property
     def login_encrypted(self) -> str:
         return self.connection.login_encrypted
 
