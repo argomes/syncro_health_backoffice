@@ -27,14 +27,16 @@ from datetime import datetime
 from ..models import TISSElegibilidadeOrigem, TISSElegibilidadeStatus, TISSGuia
 from ..orizon_autorize_client import (
     solicitar_autorizacao as orizon_solicitar_autorizacao,
-    OrizonAutorizeClientError, AutorizacaoResult, SituacaoAutorizacao,
+    cancelar_guia as orizon_cancelar_guia,
+    OrizonAutorizeClientError, AutorizacaoResult, CancelamentoResult, SituacaoAutorizacao,
+    SituacaoCancelamento,
 )
 from ..orizon_autorize_xml_builder import (
-    build_solicitacao_procedimento_xml, OrizonAutorizeXMLBuilderError,
+    build_solicitacao_procedimento_xml, build_cancelamento_guia_xml, OrizonAutorizeXMLBuilderError,
     get_tiss_padrao_versao_orizon,
 )
 from .base import (
-    ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
+    CancelamentoResultado, ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
     ProviderCapabilities, ProviderHealth,
 )
 from .health import wsdl_health_check
@@ -163,6 +165,69 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
     )
 
 
+_MOCK_SCENARIO_MAP_CANCELAMENTO = {
+    'success': 'cancelado',
+    'negativa': 'nao_cancelado',
+    'error': 'fault',
+}
+
+
+def cancelar_guia(clinic, operator_config, guia, mock_scenario='success') -> CancelamentoResultado:
+    """
+    BACFF-014 (2026-07-30): cancela junto à Orizon uma guia SP-SADT já
+    autorizada previamente (`cancelaGuiaWS` — ver
+    `orizon_autorize_xml_builder.build_cancelamento_guia_xml`, schema
+    confirmado contra o manual Autorize 4.03.00, página 30-31). Disparado
+    pela task Celery `tiss/tasks.py::cancelar_guia_orizon_task` quando o
+    atendimento correspondente é cancelado do lado da clínica.
+
+    Nunca levanta exceção de rede/transporte — falha vira
+    `CancelamentoResultado(sucesso=False, erro_code=..., erro_mensagem=...)`
+    para a task decidir se faz retry (mesmo padrão de `enviar_lote`).
+    """
+    sequencial_transacao = datetime.now().strftime('%y%m%d%H%M%S')
+
+    try:
+        xml_cancelamento, hash_md5 = build_cancelamento_guia_xml(
+            guia=guia, clinic=clinic, operator_config=operator_config,
+            sequencial_transacao=sequencial_transacao,
+        )
+    except OrizonAutorizeXMLBuilderError as exc:
+        return CancelamentoResultado(
+            sucesso=False, erro_code='xml_builder_failed',
+            erro_mensagem=f'falha_montagem_xml_cancelamento_orizon: {exc}',
+        )
+
+    try:
+        resultado = orizon_cancelar_guia(
+            endpoint_url=operator_config.connection.endpoint_url,
+            xml_cancelamento=xml_cancelamento,
+            mock_scenario=_MOCK_SCENARIO_MAP_CANCELAMENTO.get(mock_scenario, mock_scenario),
+        )
+    except OrizonAutorizeClientError as exc:
+        return CancelamentoResultado(
+            sucesso=False, erro_code='soap_network_error',
+            erro_mensagem=f'falha_soap_orizon: {exc}',
+        )
+
+    if isinstance(resultado, CancelamentoResult):
+        return CancelamentoResultado(
+            sucesso=(resultado.situacao == SituacaoCancelamento.CANCELADO),
+            numero_guia_operadora=resultado.numero_guia_operadora,
+            raw_response=resultado.raw_response,
+            erro_code='' if resultado.situacao == SituacaoCancelamento.CANCELADO else 'guia_nao_cancelada',
+            erro_mensagem='' if resultado.situacao == SituacaoCancelamento.CANCELADO else 'orizon_recusou_cancelamento',
+        )
+
+    # SOAPFaultResult — operadora rejeitou a PRÓPRIA solicitação de
+    # cancelamento (ex.: login inválido, guia não encontrada).
+    return CancelamentoResultado(
+        sucesso=False, raw_response=resultado.raw_response,
+        erro_code='soap_fault',
+        erro_mensagem=f'{resultado.codigo_erro}: {resultado.descricao_erro}',
+    )
+
+
 def health_check(operator_config) -> ProviderHealth:
     return wsdl_health_check(operator_config.connection.endpoint_url, 'orizon')
 
@@ -180,7 +245,12 @@ def capabilities() -> ProviderCapabilities:
         # operação, então False: capability declara o que ESTE código faz,
         # não o que a operadora oferece — senão a UI oferece botão que quebra.
         consulta_status=False,
-        cancelamento_guia=False,
+        # BACFF-014 (2026-07-30): cancelar_guia implementado (cancelaGuiaWS,
+        # schema confirmado contra o manual — ver providers/orizon.py). True
+        # aqui reflete o que o CÓDIGO faz; `confirmado_em_homologacao`
+        # abaixo segue False até validação real, mesma distinção já usada
+        # para `cobertura`.
+        cancelamento_guia=True,
         versoes_padrao_suportadas=(get_tiss_padrao_versao_orizon(),),
         exige_credenciais=True,
         # Bloqueado desde o BACFF-014: homologação exige clínica-piloto

@@ -31,7 +31,8 @@ from ..soap_client import (
 from ..xml_builder import build_lote_xml, XMLBuilderError, TISS_PADRAO_VERSAO
 from ..xml_validator import validate_xml, XMLValidatorError
 from .base import (
-    ElegibilidadeRespostaCompleta, EnvioLoteResultado, ProviderCapabilities, ProviderHealth,
+    CancelamentoResultado, ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
+    ProviderCapabilities, ProviderHealth,
 )
 from .health import wsdl_health_check
 
@@ -165,6 +166,20 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
         codigo_glosa=resultado.codigo_erro, descricao_glosa=resultado.descricao_erro,
         raw_response=resultado.raw_response,
         xml_enviado=xml_completo, hash_epilogo=hash_md5,
+    )
+
+
+def cancelar_guia(clinic, operator_config, guia, mock_scenario='success') -> CancelamentoResultado:
+    """
+    `tissCancelaGuia` existe no padrão ANS publicado, mas não há client de
+    transporte implementado para esse dialeto ainda (ver docstring do
+    módulo e `providers/base.py`, `envio_lote` tem o mesmo tipo de limitação
+    documentada para o `soap_client.py` genérico). Falha alto e explícito —
+    nunca fallback silencioso para o Autorize Orizon.
+    """
+    raise OperacaoNaoSuportada(
+        'Cancelamento de guia no dialeto genérico ANS ainda não tem client implementado '
+        '(ver tiss/soap_client.py). Cancelamento automático só está disponível hoje para o provider orizon.'
     )
 
 

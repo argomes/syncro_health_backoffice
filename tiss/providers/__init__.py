@@ -28,8 +28,8 @@ from ..models import (
 )
 from . import desconhecido, generico_ans, orizon
 from .base import (  # noqa: F401 — reexport: o contrato é importado daqui
-    ElegibilidadeRespostaCompleta, EnvioLoteResultado, ProviderCapabilities, ProviderHealth,
-    ProviderError, OperadoraDesativada, ProviderNaoRegistrado, ProviderNaoConfirmado,
+    CancelamentoResultado, ElegibilidadeRespostaCompleta, EnvioLoteResultado, ProviderCapabilities,
+    ProviderHealth, ProviderError, OperadoraDesativada, ProviderNaoRegistrado, ProviderNaoConfirmado,
     OperacaoNaoSuportada,
 )
 
@@ -140,6 +140,11 @@ _OUTCOME_POR_ERRO_LOTE = {
     'soap_fault': OperatorCallOutcome.SOAP_FAULT,
 }
 
+_OUTCOME_POR_ERRO_CANCELAMENTO = {
+    'soap_network_error': OperatorCallOutcome.NETWORK_ERROR,
+    'soap_fault': OperatorCallOutcome.SOAP_FAULT,
+}
+
 
 class _InstrumentedProvider:
     """
@@ -206,6 +211,27 @@ class _InstrumentedProvider:
             outcome = _OUTCOME_POR_ERRO_LOTE.get(resultado.erro_code, OperatorCallOutcome.PROVIDER_ERROR)
         _registrar_chamada(
             self._operator_config, OperatorCallOperation.ENVIO_LOTE, outcome,
+            int((time.perf_counter() - inicio) * 1000),
+        )
+        return resultado
+
+    def cancelar_guia(self, clinic, operator_config, guia, mock_scenario='success') -> CancelamentoResultado:
+        inicio = time.perf_counter()
+        try:
+            resultado = self._modulo.cancelar_guia(clinic, operator_config, guia, mock_scenario=mock_scenario)
+        except ProviderError:
+            _registrar_chamada(
+                self._operator_config, OperatorCallOperation.CANCELAMENTO,
+                OperatorCallOutcome.PROVIDER_ERROR, int((time.perf_counter() - inicio) * 1000),
+            )
+            raise
+
+        if resultado.sucesso:
+            outcome = OperatorCallOutcome.SUCCESS
+        else:
+            outcome = _OUTCOME_POR_ERRO_CANCELAMENTO.get(resultado.erro_code, OperatorCallOutcome.PROVIDER_ERROR)
+        _registrar_chamada(
+            self._operator_config, OperatorCallOperation.CANCELAMENTO, outcome,
             int((time.perf_counter() - inicio) * 1000),
         )
         return resultado

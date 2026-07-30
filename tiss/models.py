@@ -329,6 +329,7 @@ class TISSGuiaStatus(models.TextChoices):
     ACEITA = 'aceita', 'Aceita'
     GLOSADA = 'glosada', 'Glosada'
     PARCIAL = 'parcial', 'Aceita parcialmente'
+    CANCELADA = 'cancelada', 'Cancelada'
 
 
 class TISSGuia(models.Model):
@@ -379,6 +380,51 @@ class TISSGuia(models.Model):
 
     def __str__(self):
         return f'Guia {self.numero} — {self.clinic.name} ({self.status})'
+
+
+class TISSCancelamentoPendente(models.Model):
+    """
+    BACFF-014 (gap "cancelamento de guia", 2026-07-30) — alerta operacional
+    para quando o cancelamento automático de uma guia junto à operadora
+    (`cancelar_guia`, disparado via Celery ao cancelar o atendimento) esgota
+    as 3 tentativas de retry sem sucesso.
+
+    Decisão de produto do usuário (2026-07-30): não pode falhar
+    silenciosamente. Este model é a fila de trabalho manual do suporte —
+    a guia continua "cancelada" do lado da clínica, mas a Orizon nunca foi
+    avisada, então alguém precisa agir (reconciliar manualmente com a
+    operadora ou reenfileirar). Nenhum model reaproveitável já existia no
+    projeto para esse tipo de alerta acionável por guia (SystemHeartbeat/
+    SystemLog, em `metrics/models.py`, são genéricos de saúde do gateway,
+    não carregam a guia/tentativas/motivo de falha necessários aqui).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(Clinic, on_delete=models.PROTECT, related_name='tiss_cancelamentos_pendentes')
+    guia = models.ForeignKey(TISSGuia, on_delete=models.CASCADE, related_name='cancelamentos_pendentes')
+
+    tentativas = models.PositiveSmallIntegerField(default=0)
+    falhou_apos_retries = models.BooleanField(
+        default=False,
+        help_text='True quando as 3 tentativas de retry do Celery se esgotaram sem sucesso — precisa de ação manual.',
+    )
+    # Técnica (código/motivo de falha) — nunca dado de beneficiário.
+    ultimo_erro = models.TextField(blank=True)
+    resolvido = models.BooleanField(default=False, help_text='Marcar quando o suporte reconciliar manualmente com a operadora.')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Cancelamento de Guia Pendente (alerta)'
+        verbose_name_plural = 'Cancelamentos de Guia Pendentes (alertas)'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['clinic', 'falhou_apos_retries']),
+            models.Index(fields=['clinic', 'resolvido']),
+        ]
+
+    def __str__(self):
+        return f'Cancelamento pendente — guia {self.guia.numero} ({self.clinic.name})'
 
 
 class TISSGlosa(models.Model):
@@ -474,6 +520,7 @@ class TISSElegibilidadeConsulta(models.Model):
 class OperatorCallOperation(models.TextChoices):
     COBERTURA = 'cobertura', 'Cobertura (elegibilidade/autorização)'
     ENVIO_LOTE = 'envio_lote', 'Envio de lote'
+    CANCELAMENTO = 'cancelamento', 'Cancelamento de guia'
 
 
 class OperatorCallOutcome(models.TextChoices):

@@ -69,6 +69,18 @@ class SOAPFaultResult:
     raw_response: str
 
 
+class SituacaoCancelamento(str, Enum):
+    CANCELADO = 'cancelado'
+    NAO_CANCELADO = 'nao_cancelado'
+
+
+@dataclass
+class CancelamentoResult:
+    situacao: SituacaoCancelamento
+    numero_guia_operadora: str
+    raw_response: str
+
+
 # ── Mocks (sem sandbox real ainda — ver BACFF-014) ──────────────────────────
 # Estrutura de resposta ASSUMIDA por analogia com o padrão TISS genérico —
 # não confirmada contra a Orizon real. Revisar quando houver credenciais.
@@ -130,10 +142,49 @@ MOCK_FAULT_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
   </soap:Body>
 </soap:Envelope>"""
 
+# ReciboCancelaGuia — o manual (Cap. 9, tabela de mensagens de resposta,
+# citando só o NOME da mensagem) confirma que essa é a resposta da operação
+# CANCELA_GUIA, mas — assim como acontece com autorizacaoProcedimento — NÃO
+# documenta a estrutura XML exata da resposta, só do request (ver
+# `_solicitacao_sp_sadt_xml`/manual, seção "b. XML Cancelamento de
+# Autorização"). Estrutura abaixo assumida por analogia com o padrão
+# situacaoAutorizacao/autorizacaoSP-SADT já usado no restante do módulo —
+# precisa ser CONFIRMADA contra resposta real de homologação (mesmo
+# bloqueio já registrado em BACFF-014 para `autorizacaoProcedimento`).
+MOCK_CANCELADO_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <sch:reciboCancelaGuiaWS xmlns:sch="http://www.ans.gov.br/padroes/tiss/schemas">
+      <sch:reciboCancelaGuia>
+        <sch:numeroGuiaOperadora>MOCK-GUIA-OP-000001</sch:numeroGuiaOperadora>
+        <sch:situacaoCancelamento>1</sch:situacaoCancelamento>
+      </sch:reciboCancelaGuia>
+      <sch:hash>mock-hash</sch:hash>
+    </sch:reciboCancelaGuiaWS>
+  </soap:Body>
+</soap:Envelope>"""
+
+MOCK_NAO_CANCELADO_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <sch:reciboCancelaGuiaWS xmlns:sch="http://www.ans.gov.br/padroes/tiss/schemas">
+      <sch:reciboCancelaGuia>
+        <sch:situacaoCancelamento>2</sch:situacaoCancelamento>
+      </sch:reciboCancelaGuia>
+      <sch:hash>mock-hash</sch:hash>
+    </sch:reciboCancelaGuiaWS>
+  </soap:Body>
+</soap:Envelope>"""
+
 _SITUACAO_MAP = {
     '1': SituacaoAutorizacao.AUTORIZADO,
     '2': SituacaoAutorizacao.EM_ANALISE,
     '3': SituacaoAutorizacao.NEGADO,
+}
+
+_SITUACAO_CANCELAMENTO_MAP = {
+    '1': SituacaoCancelamento.CANCELADO,
+    '2': SituacaoCancelamento.NAO_CANCELADO,
 }
 
 
@@ -173,6 +224,72 @@ def _parse_response(raw_response: str):
         )
 
     raise OrizonAutorizeClientError('resposta_autorize_sem_autorizacao_nem_fault')
+
+
+def _parse_cancelamento_response(raw_response: str):
+    doc = etree.fromstring(raw_response.encode('utf-8'))
+
+    fault = doc.find('.//{*}tissFaultWS')
+    if fault is not None:
+        codigo_el = fault.find('.//{*}codigoErro')
+        descricao_el = fault.find('.//{*}descricaoErro')
+        return SOAPFaultResult(
+            codigo_erro=(codigo_el.text if codigo_el is not None else ''),
+            descricao_erro=(descricao_el.text if descricao_el is not None else ''),
+            raw_response=raw_response,
+        )
+
+    recibo = doc.find('.//{*}reciboCancelaGuia')
+    if recibo is not None:
+        situacao_el = recibo.find('{*}situacaoCancelamento')
+        situacao_raw = situacao_el.text if situacao_el is not None else ''
+        situacao = _SITUACAO_CANCELAMENTO_MAP.get(situacao_raw, SituacaoCancelamento.NAO_CANCELADO)
+
+        numero_guia_el = recibo.find('{*}numeroGuiaOperadora')
+
+        return CancelamentoResult(
+            situacao=situacao,
+            numero_guia_operadora=(numero_guia_el.text if numero_guia_el is not None else ''),
+            raw_response=raw_response,
+        )
+
+    raise OrizonAutorizeClientError('resposta_cancela_guia_sem_recibo_nem_fault')
+
+
+def cancelar_guia(endpoint_url: str, xml_cancelamento: str, mock_scenario: str = 'cancelado'):
+    """
+    Envia cancelaGuiaWS (Autorize Orizon) via SOAP 1.1 — mesmo padrão de
+    `solicitar_autorizacao` (envelope, timeout, tratamento de erro de rede).
+    Se TISS_SOAP_MOCK=true, intercepta e devolve resposta fixa
+    (mock_scenario='cancelado'|'nao_cancelado'|'fault') sem rede real.
+    Retorna CancelamentoResult ou SOAPFaultResult.
+
+    Estrutura de resposta (ReciboCancelaGuia) NÃO confirmada contra a
+    Orizon real — ver docstring de MOCK_CANCELADO_RESPONSE acima e
+    BACFF-014 (mesmo bloqueio de homologação real já registrado para
+    `solicitar_autorizacao`).
+    """
+    if _is_mock_enabled():
+        mock_responses = {
+            'cancelado': MOCK_CANCELADO_RESPONSE,
+            'nao_cancelado': MOCK_NAO_CANCELADO_RESPONSE,
+            'fault': MOCK_FAULT_RESPONSE,
+        }
+        raw = mock_responses.get(mock_scenario, MOCK_FAULT_RESPONSE)
+        logger.info('orizon_autorize_client: modo mock ativo (TISS_SOAP_MOCK=true), cenário=%s', mock_scenario)
+        return _parse_cancelamento_response(raw)
+
+    headers = {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': '""',
+    }
+    try:
+        resp = httpx.post(endpoint_url, content=xml_cancelamento.encode('utf-8'), headers=headers, timeout=DEFAULT_TIMEOUT)
+    except httpx.HTTPError as exc:
+        logger.error('orizon_autorize_client: falha de rede ao chamar cancelaGuia: %s', type(exc).__name__)
+        raise OrizonAutorizeClientError('soap_network_error') from exc
+
+    return _parse_cancelamento_response(resp.text)
 
 
 def solicitar_autorizacao(endpoint_url: str, xml_solicitacao: str, mock_scenario: str = 'autorizado'):
