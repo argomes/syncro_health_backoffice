@@ -8,7 +8,7 @@ from . import providers
 from .models import (
     TISSOperatorConfig, TISSOperatorConnection, TISSLote, TISSGuia, TISSGlosa,
     TISSElegibilidadeConsulta, TUSSProcedureCode, ANSInsuranceOperator, OperatorCallLog,
-    mascarar_numero_carteira,
+    TISSCancelamentoPendente, mascarar_numero_carteira,
 )
 from .services import enviar_lote, TISSServiceError
 
@@ -216,6 +216,37 @@ class TISSGuiaAdmin(TenantScopedAdminMixin, BaseAdmin):
         }
         cor = cores.get(obj.status, '#444')
         return format_html('<span style="color: {}; font-weight: bold;">{}</span>', cor, obj.get_status_display())
+
+
+@admin.register(TISSCancelamentoPendente)
+class TISSCancelamentoPendenteAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    BACFF-014 (2026-07-30) — fila de trabalho manual do suporte: guias cujo
+    cancelamento automático junto à operadora esgotou as 3 tentativas de
+    retry do Celery (`tiss/tasks.py::cancelar_guia_orizon_task`). `alerta`
+    destaca visualmente as pendências não resolvidas (mesmo padrão de selo
+    já usado em `TISSOperatorConfigAdmin.integracao_automatica_badge`) —
+    facilita o suporte achar isso sem precisar saber onde procurar.
+    """
+    list_display = ('guia', 'clinic', 'alerta', 'tentativas', 'resolvido', 'created_at')
+    list_filter = ('falhou_apos_retries', 'resolvido', 'clinic')
+    search_fields = ('guia__numero', 'guia__appointment_id', 'clinic__name')
+    readonly_fields = ('id', 'guia', 'clinic', 'tentativas', 'ultimo_erro', 'falhou_apos_retries', 'created_at', 'updated_at')
+    fields = (
+        'id', 'guia', 'clinic', 'tentativas', 'ultimo_erro', 'falhou_apos_retries', 'resolvido',
+        'created_at', 'updated_at',
+    )
+
+    @admin.display(description='Alerta')
+    def alerta(self, obj):
+        if obj and obj.falhou_apos_retries and not obj.resolvido:
+            return mark_safe(
+                '<span style="color: white; background: #c0392b; padding: 2px 8px; '
+                'border-radius: 3px; font-weight: bold;">⚠ AÇÃO MANUAL NECESSÁRIA</span>'
+            )
+        if obj and obj.resolvido:
+            return mark_safe('<span style="color: green;">Resolvido</span>')
+        return '—'
 
 
 @admin.register(TISSGlosa)

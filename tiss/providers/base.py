@@ -54,7 +54,21 @@ funções de módulo (não classes — não há estado por provider):
    o padrão é um GET no `?wsdl`. Não levanta exceção — devolve
    `ProviderHealth(reachable=False, ...)`.
 
-4) capabilities() -> ProviderCapabilities
+4) cancelar_guia(clinic, operator_config, guia, mock_scenario='success')
+       -> CancelamentoResultado
+
+   BACFF-014 (2026-07-30): cancela junto à operadora uma guia já autorizada
+   previamente, disparado automaticamente quando o atendimento/agendamento
+   correspondente é cancelado do lado da clínica (ver `tiss/tasks.py`).
+   Provider é dono de montar o XML/dialeto de cancelamento no formato da
+   operadora e transportá-lo; NÃO persiste nada — quem escreve
+   `TISSGuia.status` e cria `TISSCancelamentoPendente` em caso de falha após
+   retries é a task Celery (`tiss/tasks.py::cancelar_guia_orizon_task`), a
+   partir do `CancelamentoResultado` devolvido aqui. Provider que não
+   implementa a operação (ex.: genérico ANS, sem client de cancelamento
+   ainda) levanta `OperacaoNaoSuportada` — nunca fallback silencioso.
+
+5) capabilities() -> ProviderCapabilities
 
    Estática por provider (não depende de config). Consumida pelo serializer
    de `TISSOperatorConfig` para que gateway e UI habilitem botões por
@@ -222,6 +236,25 @@ class EnvioLoteResultado:
     erro_mensagem: str = ''
     codigo_glosa: str = ''
     descricao_glosa: str = ''
+
+
+@dataclass
+class CancelamentoResultado:
+    """
+    Retorno normalizado de `provider.cancelar_guia` (BACFF-014, 2026-07-30).
+    O provider preenche; a task Celery (`tiss/tasks.py`) traduz para a
+    transição de `TISSGuia.status` e, em caso de falha após as 3 tentativas
+    de retry, para `TISSCancelamentoPendente`.
+
+    Mesmo padrão de `EnvioLoteResultado`: nunca levanta exceção de
+    transporte/negócio para o chamador — falha vira `sucesso=False` com
+    `erro_code`/`erro_mensagem` técnicos.
+    """
+    sucesso: bool
+    numero_guia_operadora: str = ''
+    raw_response: str = ''
+    erro_code: str = ''
+    erro_mensagem: str = ''
 
 
 @dataclass

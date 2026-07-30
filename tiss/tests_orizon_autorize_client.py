@@ -1,7 +1,8 @@
 from django.test import TestCase, override_settings
 
 from .orizon_autorize_client import (
-    solicitar_autorizacao, AutorizacaoResult, SOAPFaultResult, SituacaoAutorizacao,
+    solicitar_autorizacao, cancelar_guia, AutorizacaoResult, CancelamentoResult, SOAPFaultResult,
+    SituacaoAutorizacao, SituacaoCancelamento,
 )
 
 
@@ -46,4 +47,33 @@ class OrizonAutorizeClientMockTests(TestCase):
 
     def test_cenario_desconhecido_cai_no_fault(self):
         resultado = solicitar_autorizacao('https://fake-endpoint', '<sch:solicitacaoProcedimentoWS/>', mock_scenario='cenario-nao-existe')
+        self.assertIsInstance(resultado, SOAPFaultResult)
+
+
+@override_settings(TISS_SOAP_MOCK=True)
+class OrizonCancelarGuiaClientMockTests(TestCase):
+    """BACFF-014 (2026-07-30) — cancelamento de guia, mesmo padrão de solicitar_autorizacao."""
+
+    def test_cenario_cancelado_extrai_numero_guia_operadora(self):
+        resultado = cancelar_guia('https://fake-endpoint', '<ans:cancelaGuiaWS/>', mock_scenario='cancelado')
+        self.assertIsInstance(resultado, CancelamentoResult)
+        self.assertEqual(resultado.situacao, SituacaoCancelamento.CANCELADO)
+        self.assertEqual(resultado.numero_guia_operadora, 'MOCK-GUIA-OP-000001')
+
+    def test_cenario_nao_cancelado(self):
+        resultado = cancelar_guia('https://fake-endpoint', '<ans:cancelaGuiaWS/>', mock_scenario='nao_cancelado')
+        self.assertIsInstance(resultado, CancelamentoResult)
+        self.assertEqual(resultado.situacao, SituacaoCancelamento.NAO_CANCELADO)
+
+    def test_cenario_fault_extrai_codigo_e_descricao_erro(self):
+        resultado = cancelar_guia('https://fake-endpoint', '<ans:cancelaGuiaWS/>', mock_scenario='fault')
+        self.assertIsInstance(resultado, SOAPFaultResult)
+        self.assertEqual(resultado.codigo_erro, 'LoginInvalido')
+
+    def test_mock_nao_faz_chamada_de_rede(self):
+        resultado = cancelar_guia('https://endpoint-inexistente.invalid', '<ans:cancelaGuiaWS/>', mock_scenario='cancelado')
+        self.assertIsInstance(resultado, CancelamentoResult)
+
+    def test_cenario_desconhecido_cai_no_fault(self):
+        resultado = cancelar_guia('https://fake-endpoint', '<ans:cancelaGuiaWS/>', mock_scenario='cenario-nao-existe')
         self.assertIsInstance(resultado, SOAPFaultResult)
