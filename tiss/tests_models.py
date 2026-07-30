@@ -59,6 +59,46 @@ class TISSOperatorConfigModelTests(TestCase):
         self.assertNotIn('senha-secreta', texto)
 
 
+class TISSOperatorConfigIntegracaoAutomaticaTests(TestCase):
+    """BACFF-016: `integracao_automatica` só é True para Orizon ativo."""
+
+    def test_orizon_ativo_e_integracao_automatica(self):
+        clinic = _make_clinic('op-orizon-ativo')
+        op = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Orizon', registro_ans='123456',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=True,
+        )
+        self.assertTrue(op.integracao_automatica)
+
+    def test_orizon_desativado_nao_e_integracao_automatica(self):
+        clinic = _make_clinic('op-orizon-inativo')
+        op = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Orizon', registro_ans='123456',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=False,
+        )
+        self.assertFalse(op.integracao_automatica)
+
+    def test_generico_ans_nao_e_integracao_automatica(self):
+        clinic = _make_clinic('op-generico')
+        op = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Outra Operadora', registro_ans='654321',
+            endpoint_url='https://exemplo.com/Service.asmx',
+            gateway_provider='generico_ans', ativo=True,
+        )
+        self.assertFalse(op.integracao_automatica)
+
+    def test_desconhecido_nao_e_integracao_automatica(self):
+        clinic = _make_clinic('op-desconhecido')
+        op = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Outra Operadora', registro_ans='654322',
+            endpoint_url='https://exemplo.com/Service.asmx',
+            gateway_provider='desconhecido', ativo=True,
+        )
+        self.assertFalse(op.integracao_automatica)
+
+
 class TISSLoteSequencialTests(TestCase):
     def test_numero_lote_sequencial_por_clinica_e_operadora(self):
         clinic = _make_clinic('lote-seq-teste')

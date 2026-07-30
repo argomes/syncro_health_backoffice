@@ -162,3 +162,35 @@ class TISSGuiaMaskedDisplayTests(TestCase):
         self.assertNotIn('numero_carteira', self.admin.list_display)
         self.assertNotIn('beneficiario_nome', self.admin.search_fields)
         self.assertNotIn('numero_carteira', self.admin.search_fields)
+
+
+class TISSOperatorConfigAdminIntegracaoAutomaticaTests(TestCase):
+    """BACFF-016: selo no admin distinguindo Orizon ativo (automático) do resto (manual)."""
+
+    def setUp(self):
+        self.site = AdminSite()
+        self.admin = TISSOperatorConfigAdmin(TISSOperatorConfig, self.site)
+        self.clinic = _make_clinic('admin-badge-clinic')
+
+    def test_selo_verde_para_orizon_ativo(self):
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Orizon', registro_ans='333333',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=True,
+        )
+        html = self.admin.integracao_automatica_selo(op)
+        self.assertIn('Integração automática', html)
+        self.assertIn('#2e7d32', html)
+
+    def test_selo_neutro_para_operadora_nao_orizon(self):
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Outra', registro_ans='444444',
+            endpoint_url='https://exemplo.com/Service.asmx',
+            gateway_provider='generico_ans', ativo=True,
+        )
+        html = self.admin.integracao_automatica_selo(op)
+        self.assertIn('Somente confirmação manual', html)
+        self.assertNotIn('#2e7d32', html)
+
+    def test_selo_dash_sem_objeto(self):
+        self.assertEqual(self.admin.integracao_automatica_selo(None), '—')

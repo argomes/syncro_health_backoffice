@@ -7,6 +7,7 @@ from rest_framework import status
 from accounts.models import SupportUser, ClinicAccess
 from clinics.models import Clinic
 from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa
+from .serializers import TISSOperatorConfigSerializer
 
 
 def _make_clinic(slug):
@@ -71,6 +72,73 @@ class TISSEstatisticasEndpointTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data['total_lotes'], 0)
         self.assertEqual(resp.data['valor_apresentado'], 0.0)
+
+
+class TISSOperatorConfigSerializerIntegracaoAutomaticaTests(APITestCase):
+    """
+    BACFF-016: expõe `gateway_provider` e `integracao_automatica` para o
+    frontend/portal saber quais operadoras têm chamada automática de fato
+    (Orizon ativo) vs. confirmação manual (todas as demais).
+    """
+
+    def test_operadora_orizon_ativa_expoe_integracao_automatica_true(self):
+        clinic = _make_clinic('serializer-orizon')
+        op = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Orizon', registro_ans='111111',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=True,
+        )
+        data = TISSOperatorConfigSerializer(op).data
+        self.assertEqual(data['gateway_provider'], 'orizon')
+        self.assertTrue(data['integracao_automatica'])
+
+    def test_operadora_nao_orizon_expoe_integracao_automatica_false(self):
+        clinic = _make_clinic('serializer-generico')
+        op = TISSOperatorConfig.objects.create(
+            clinic=clinic, nome_operadora='Outra', registro_ans='222222',
+            endpoint_url='https://exemplo.com/Service.asmx',
+            gateway_provider='generico_ans', ativo=True,
+        )
+        data = TISSOperatorConfigSerializer(op).data
+        self.assertEqual(data['gateway_provider'], 'generico_ans')
+        self.assertFalse(data['integracao_automatica'])
+
+
+class TISSOperatorConfigViewSetIntegracaoAutomaticaHttpTests(APITestCase):
+    """
+    Teste de contrato HTTP fim-a-fim: confirma que `integracao_automatica`
+    chega de fato no JSON do endpoint real (GET /api/tiss/operadoras/{id}/),
+    não só quando o serializer é instanciado diretamente em memória.
+    """
+
+    def setUp(self):
+        self.clinic = _make_clinic('http-integracao-automatica')
+        self.admin_user = SupportUser.objects.create_user(
+            username='admin-http-integracao', password='x', role=SupportUser.Role.ADMIN,
+        )
+        self.client.force_authenticate(user=self.admin_user)
+
+    def test_endpoint_real_retorna_true_para_orizon_ativo(self):
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Orizon', registro_ans='333333',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=True,
+        )
+        resp = self.client.get(f'/api/tiss/operadoras/{op.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['gateway_provider'], 'orizon')
+        self.assertTrue(resp.data['integracao_automatica'])
+
+    def test_endpoint_real_retorna_false_para_orizon_desativado(self):
+        op = TISSOperatorConfig.objects.create(
+            clinic=self.clinic, nome_operadora='Orizon', registro_ans='444444',
+            endpoint_url='https://tiss-documentos.orizon.com.br/Service.asmx',
+            gateway_provider='orizon', ativo=False,
+        )
+        resp = self.client.get(f'/api/tiss/operadoras/{op.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['gateway_provider'], 'orizon')
+        self.assertFalse(resp.data['integracao_automatica'])
 
 
 class TISSGuiaViewSetIsolationTests(APITestCase):

@@ -33,13 +33,18 @@ class TISSOperatorConfigSerializer(serializers.ModelSerializer):
     # com um `if operadora == 'orizon'` no frontend — o hardcode mais caro de
     # desfazer, porque vive no parque de clínicas.
     capabilities = serializers.SerializerMethodField()
+    # BACFF-016: True só quando a clínica tem chamada automática de fato
+    # funcional (hoje, Orizon ativo) — todas as demais configs (inclusive
+    # `generico_ans`/`desconhecido`, ou Orizon com `ativo=False`) dependem de
+    # confirmação manual. Ver `TISSOperatorConfig.integracao_automatica`.
+    integracao_automatica = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = TISSOperatorConfig
         fields = [
             'id', 'clinic', 'nome_operadora', 'registro_ans', 'cnpj_operadora',
             'endpoint_url', 'gateway_provider', 'connection_id', 'ativo', 'capabilities',
-            'login', 'senha', 'created_at', 'updated_at',
+            'integracao_automatica', 'login', 'senha', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
