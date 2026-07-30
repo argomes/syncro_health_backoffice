@@ -4,6 +4,7 @@ from . import providers
 from .models import (
     TISSOperatorConfig, TISSGatewayProvider, TISSLote, TISSGuia, TISSGlosa,
     TISSElegibilidadeConsulta, TUSSProcedureCode, ANSInsuranceOperator, mascarar_numero_carteira,
+    TISSDocumentoAssinatura,
 )
 
 
@@ -158,3 +159,26 @@ class ANSInsuranceOperatorSerializer(serializers.ModelSerializer):
     class Meta:
         model = ANSInsuranceOperator
         fields = ['ans_code', 'name', 'cnpj', 'active', 'updated_at']
+
+
+class TISSDocumentoAssinaturaPendenteSerializer(serializers.ModelSerializer):
+    """
+    TASK-BO-10 — expõe ao gateway (pull de sync) só o que ele precisa para
+    assinar: o fragmento canônico e o identificador. Nunca expõe login/senha
+    (não são campos deste model) nem qualquer dado do certificado (que o
+    backoffice nunca tem).
+    """
+    class Meta:
+        model = TISSDocumentoAssinatura
+        fields = ['id', 'fragmento_canonico', 'root_tag', 'sequencial_transacao', 'created_at']
+        read_only_fields = fields
+
+
+class TISSDocumentoAssinaturaBlocoSerializer(serializers.Serializer):
+    """
+    TASK-BO-10 — corpo do push de sync (gateway -> backoffice): SÓ o bloco de
+    assinatura (SignedInfo/SignatureValue/KeyInfo). Nunca reenvia o XML
+    completo nem o certificado.
+    """
+    documento_id = serializers.UUIDField()
+    signature_block = serializers.CharField()

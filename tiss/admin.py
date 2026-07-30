@@ -8,7 +8,7 @@ from . import providers
 from .models import (
     TISSOperatorConfig, TISSOperatorConnection, TISSLote, TISSGuia, TISSGlosa,
     TISSElegibilidadeConsulta, TUSSProcedureCode, ANSInsuranceOperator, OperatorCallLog,
-    mascarar_numero_carteira,
+    TISSDocumentoAssinatura, mascarar_numero_carteira,
 )
 from .services import enviar_lote, TISSServiceError
 
@@ -260,6 +260,28 @@ class OperatorCallLogAdmin(TenantScopedAdminMixin, BaseAdmin):
     list_filter = ('outcome', 'operation', 'gateway_provider')
     search_fields = ('registro_ans', 'clinic__name')
     readonly_fields = [f.name for f in OperatorCallLog._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(TISSDocumentoAssinatura)
+class TISSDocumentoAssinaturaAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    TASK-BO-10 — visibilidade operacional da fila de assinatura XMLDSig
+    (suporte precisa saber se um envio de documento está travado esperando o
+    gateway assinar). Somente leitura: a manipulação (enfileirar, aplicar
+    assinatura, transmitir) acontece só via `xmldsig_service` — nunca editado
+    manualmente pelo admin, que corromperia a garantia de byte-identidade do
+    fragmento canônico.
+    """
+    list_display = ('guia', 'clinic', 'status', 'protocolo', 'created_at', 'assinado_at', 'enviado_at')
+    list_filter = ('status', 'clinic')
+    search_fields = ('clinic__name', 'guia__numero', 'protocolo')
+    readonly_fields = [f.name for f in TISSDocumentoAssinatura._meta.fields]
 
     def has_add_permission(self, request):
         return False

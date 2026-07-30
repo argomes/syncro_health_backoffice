@@ -215,3 +215,28 @@ class _InstrumentedProvider:
 
     def capabilities(self) -> ProviderCapabilities:
         return self._modulo.capabilities()
+
+    def preparar_documento_assinatura(self, guia, clinic, sequencial_transacao,
+                                       documento_base64, nome_arquivo, tipo_documento='ANEXO'):
+        """
+        TASK-BO-10 — passthrough SEM instrumentação de `OperatorCallLog`: não
+        é uma chamada de negócio à operadora (é montagem/canonicalização
+        local), então não deve poluir a métrica de saúde da operadora — mesmo
+        raciocínio de `capabilities()`/`health_check()` acima.
+        """
+        return self._modulo.preparar_documento_assinatura(
+            guia, clinic, self._operator_config, sequencial_transacao,
+            documento_base64, nome_arquivo, tipo_documento=tipo_documento,
+        )
+
+    def enviar_documento_assinado(self, xml_final, mock_scenario='success'):
+        """
+        TASK-BO-10 — esta SIM é uma chamada de negócio real à operadora, mas
+        fica deliberadamente FORA de `OperatorCallOperation`/`OperatorCallLog`
+        nesta rodada (escopo desta task é o handoff de assinatura, não o
+        dashboard de saúde — ver `.claude/tasks` para o item de extensão
+        futura, se o volume de envioDocumentoWS justificar).
+        """
+        return self._modulo.enviar_documento_assinado(
+            xml_final, self._operator_config, mock_scenario=mock_scenario,
+        )

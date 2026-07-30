@@ -16,12 +16,15 @@ from .serializers import (
     TISSOperatorConfigSerializer, TISSLoteSerializer, TISSGuiaSerializer, TISSGlosaSerializer,
     TISSElegibilidadeConsultaSerializer, TUSSProcedureCodeSerializer, ANSInsuranceOperatorSerializer,
     ElegibilidadeRespostaCompletaSerializer,
+    TISSDocumentoAssinaturaPendenteSerializer, TISSDocumentoAssinaturaBlocoSerializer,
 )
 from .permissions import IsTISSAuthorized
 from .services import (
     enviar_lote, TISSServiceError,
     consultar_elegibilidade_automatica, registrar_elegibilidade_manual,
 )
+from . import xmldsig_service
+from .xmldsig_service import XMLDSigServiceError
 
 
 # Códigos de erro que significam "a config desta operadora bloqueia a chamada
@@ -313,6 +316,54 @@ def insurance_operator_search(request):
         Q(name__icontains=q) | Q(ans_code__icontains=q)
     ).order_by('name')[:50]
     return Response(ANSInsuranceOperatorSerializer(operators, many=True).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def sync_documentos_pendentes(request):
+    """
+    TASK-BO-10 — GET /api/tiss/xmldsig/sync/pendentes/ — pull do SyncWorker
+    do gateway (Go, EDGW-073, fora desta task). Mesmo padrão de autenticação
+    dos demais endpoints consumidos pelo gateway (X-License-Key, ver
+    `verificar_elegibilidade` acima) — não inventa esquema de auth novo.
+    Devolve os fragmentos C14N pendentes de assinatura desta clínica; o
+    gateway assina localmente (o backoffice nunca vê o .p12) e devolve só o
+    bloco de assinatura no push seguinte (`sync_documentos_assinatura`).
+    """
+    clinic = request.clinic
+    pendentes = xmldsig_service.listar_pendentes_para_sync(clinic)
+    return Response({
+        'documentos': TISSDocumentoAssinaturaPendenteSerializer(pendentes, many=True).data,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def sync_documentos_assinatura(request):
+    """
+    TASK-BO-10 — POST /api/tiss/xmldsig/sync/assinatura/ — push do
+    SyncWorker do gateway devolvendo SÓ o bloco de assinatura
+    (SignedInfo/SignatureValue/KeyInfo) — nunca o XML completo nem o
+    certificado. Reinserido por texto em `fragmento_canonico`
+    (`TISSDocumentoAssinatura.aplicar_bloco_assinatura`), nunca reparseado.
+    Isolado por clínica: `documento_id` de outra clínica é tratado como
+    "não encontrado" (404), nunca vaza existência entre clínicas.
+    """
+    serializer = TISSDocumentoAssinaturaBlocoSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    clinic = request.clinic
+
+    try:
+        documento = xmldsig_service.aplicar_assinatura(
+            clinic=clinic,
+            documento_id=serializer.validated_data['documento_id'],
+            signature_block=serializer.validated_data['signature_block'],
+        )
+    except XMLDSigServiceError as exc:
+        http_status = status.HTTP_404_NOT_FOUND if exc.code == 'documento_nao_encontrado' else status.HTTP_422_UNPROCESSABLE_ENTITY
+        return Response({'error': exc.code, 'detail': str(exc)}, status=http_status)
+
+    return Response({'id': str(documento.id), 'status': documento.status})
 
 
 @api_view(['POST'])

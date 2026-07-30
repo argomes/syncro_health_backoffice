@@ -31,7 +31,8 @@ from ..soap_client import (
 from ..xml_builder import build_lote_xml, XMLBuilderError, TISS_PADRAO_VERSAO
 from ..xml_validator import validate_xml, XMLValidatorError
 from .base import (
-    ElegibilidadeRespostaCompleta, EnvioLoteResultado, ProviderCapabilities, ProviderHealth,
+    ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
+    ProviderCapabilities, ProviderHealth,
 )
 from .health import wsdl_health_check
 
@@ -165,6 +166,23 @@ def enviar_lote(lote, guias, sequencial_transacao, mock_scenario='success') -> E
         codigo_glosa=resultado.codigo_erro, descricao_glosa=resultado.descricao_erro,
         raw_response=resultado.raw_response,
         xml_enviado=xml_completo, hash_epilogo=hash_md5,
+    )
+
+
+def preparar_documento_assinatura(guia, clinic, operator_config, sequencial_transacao,
+                                   documento_base64, nome_arquivo, tipo_documento='ANEXO'):
+    """
+    TASK-BO-10: `envioDocumentoWS` assinado (XMLDSig) não está implementado
+    para o dialeto genérico ANS — só a Orizon confirma esta operação hoje.
+    """
+    raise OperacaoNaoSuportada(
+        'Envio de documento assinado (XMLDSig) não está implementado para o provider genérico ANS.'
+    )
+
+
+def enviar_documento_assinado(xml_final, operator_config, mock_scenario='success'):
+    raise OperacaoNaoSuportada(
+        'Envio de documento assinado (XMLDSig) não está implementado para o provider genérico ANS.'
     )
 
 
