@@ -250,3 +250,42 @@ def registrar_elegibilidade_manual(
         origem=TISSElegibilidadeOrigem.MANUAL,
         numero_guia_operadora=numero_guia_operadora,
     )
+
+
+_STATUS_GUIA_COM_AUTORIZACAO_EMITIDA = frozenset({
+    TISSGuiaStatus.ENVIADA, TISSGuiaStatus.ACEITA, TISSGuiaStatus.PARCIAL, TISSGuiaStatus.GLOSADA,
+})
+
+
+def disparar_cancelamento_guia(guia: TISSGuia) -> bool:
+    """
+    BACFF-014 (2026-07-30) — gatilho do cancelamento automático de guia.
+    Chamado quando o atendimento/agendamento correspondente é cancelado do
+    lado da clínica (ver `tiss/views.py::cancelar_guia_view`, consumido pelo
+    Edge Gateway autenticado por license_key).
+
+    Só enfileira a task Celery se a guia já teve alguma autorização emitida
+    pela operadora (`status` em `_STATUS_GUIA_COM_AUTORIZACAO_EMITIDA`) — uma
+    guia ainda `nao_enviada` nunca chegou à operadora, não há o que cancelar
+    do lado dela. `TISSGuia.status` é marcado `CANCELADA` imediatamente aqui
+    (reflete o cancelamento já decidido do lado da clínica); o resultado da
+    chamada à operadora (sucesso ou falha após retries) é tratado
+    assincronamente pela task, sem bloquear quem está cancelando o
+    atendimento na recepção.
+
+    Retorna True se o cancelamento junto à operadora foi enfileirado, False
+    se não havia nada a cancelar (guia nunca enviada).
+    """
+    from .tasks import cancelar_guia_task
+
+    if guia.status not in _STATUS_GUIA_COM_AUTORIZACAO_EMITIDA:
+        logger.info(
+            'disparar_cancelamento_guia: guia %s com status "%s" — nenhuma autorização emitida, nada a cancelar.',
+            guia.id, guia.status,
+        )
+        TISSGuia.objects.filter(pk=guia.pk).update(status=TISSGuiaStatus.CANCELADA)
+        return False
+
+    TISSGuia.objects.filter(pk=guia.pk).update(status=TISSGuiaStatus.CANCELADA)
+    cancelar_guia_task.delay(str(guia.id))
+    return True

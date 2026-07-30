@@ -31,7 +31,7 @@ from ..soap_client import (
 from ..xml_builder import build_lote_xml, XMLBuilderError, TISS_PADRAO_VERSAO
 from ..xml_validator import validate_xml, XMLValidatorError
 from .base import (
-    ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
+    CancelamentoResultado, ElegibilidadeRespostaCompleta, EnvioLoteResultado, OperacaoNaoSuportada,
     ProviderCapabilities, ProviderHealth,
 )
 from .health import wsdl_health_check
@@ -183,6 +183,20 @@ def preparar_documento_assinatura(guia, clinic, operator_config, sequencial_tran
 def enviar_documento_assinado(xml_final, operator_config, mock_scenario='success'):
     raise OperacaoNaoSuportada(
         'Envio de documento assinado (XMLDSig) não está implementado para o provider genérico ANS.'
+    )
+
+
+def cancelar_guia(clinic, operator_config, guia, mock_scenario='success') -> CancelamentoResultado:
+    """
+    `tissCancelaGuia` existe no padrão ANS publicado, mas não há client de
+    transporte implementado para esse dialeto ainda (ver docstring do
+    módulo e `providers/base.py`, `envio_lote` tem o mesmo tipo de limitação
+    documentada para o `soap_client.py` genérico). Falha alto e explícito —
+    nunca fallback silencioso para o Autorize Orizon.
+    """
+    raise OperacaoNaoSuportada(
+        'Cancelamento de guia no dialeto genérico ANS ainda não tem client implementado '
+        '(ver tiss/soap_client.py). Cancelamento automático só está disponível hoje para o provider orizon.'
     )
 
 

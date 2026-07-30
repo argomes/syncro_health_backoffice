@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     TISSOperatorConfigViewSet, TISSLoteViewSet, TISSGuiaViewSet, estatisticas,
-    verificar_elegibilidade, registrar_elegibilidade_manual_view,
+    verificar_elegibilidade, registrar_elegibilidade_manual_view, cancelar_guia_view,
     procedure_code_lookup, insurance_operator_lookup,
     procedure_code_search, insurance_operator_search,
     sync_documentos_pendentes, sync_documentos_assinatura,
@@ -23,6 +23,8 @@ urlpatterns = [
     # de fragmentos/assinatura XMLDSig de envioDocumentoWS (Orizon).
     path('xmldsig/sync/pendentes/', sync_documentos_pendentes, name='tiss_xmldsig_sync_pendentes'),
     path('xmldsig/sync/assinatura/', sync_documentos_assinatura, name='tiss_xmldsig_sync_assinatura'),
+    # BACFF-014 (2026-07-30): gatilho de cancelamento automático de guia — consumido pelo Edge Gateway (license_key).
+    path('guias/cancelar/', cancelar_guia_view, name='tiss_guia_cancelar'),
     # EDGW-013: fonte de verdade das tabelas de referência (cache-aside no gateway).
     # As rotas /search/ precisam vir ANTES das rotas <str:...>/ (senão "search"
     # seria capturado como um tuss_code/ans_code literal).

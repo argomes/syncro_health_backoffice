@@ -96,6 +96,13 @@ def _solicitacao_sp_sadt_xml(guia, operator_config) -> str:
     manual) NÃO estão implementadas aqui ainda; ficam para quando a
     primeira clínica-piloto usar uma dessas operadoras especificamente
     (ver BACFF-014, "próxima ação executável", item 5).
+
+    BACFF-014 (P1, 2026-07-30): `numeroGuiaPrincipal`, `codValidacao`,
+    `nomeProfissional` (dentro de `profissionalSolicitante`) e `observacao`
+    confirmados no exemplo oficial do manual (Cap. 10, mesmo bloco já usado
+    para `indicacaoClinica`/`ausenciaCodValidacao`) e adicionados aqui.
+    Nenhum é PII de paciente — nome do profissional é dado de negócio da
+    clínica, não do beneficiário.
     """
     procedimentos = guia.procedimentos or []
     procedimentos_xml = ''.join(
@@ -112,14 +119,39 @@ def _solicitacao_sp_sadt_xml(guia, operator_config) -> str:
     # elemento obrigatório pelo schema) em vez de inventar um CID.
     indicacao_clinica = _esc(getattr(guia, 'indicacao_clinica', '') or 'Não informado')
 
+    # numeroGuiaPrincipal: usado quando esta solicitação é uma
+    # continuação/prorrogação de outra guia já autorizada. Sem esse
+    # relacionamento disponível no model hoje, repete o próprio
+    # numeroGuiaPrestador (mesmo padrão do exemplo do manual, onde os dois
+    # campos aparecem com valores próprios mas sem regra de derivação
+    # documentada além de "identificador da guia").
+    numero_guia_principal = _esc(getattr(guia, 'numero_guia_principal', '') or guia.numero)
+    # codValidacao: código de validação/senha prévia da operadora quando
+    # exigido (ex.: Bradesco/tipoEtapaAutorizacao=1). Sem esse dado
+    # disponível no model ainda, mantém o comportamento já existente de
+    # ausenciaCodValidacao='01' (justificativa de ausência) e envia
+    # codValidacao vazio — o manual mostra os dois campos como irmãos no
+    # mesmo exemplo, não como mutuamente exclusivos.
+    cod_validacao = _esc(getattr(guia, 'cod_validacao', '') or '')
+    nome_profissional = _esc(getattr(guia, 'nome_profissional_solicitante', '') or 'Não informado')
+    observacao = _esc(getattr(guia, 'observacao', '') or '')
+
+    # Ordem dos elementos segue exatamente a sequência do exemplo oficial do
+    # manual (Cap. 10, "XML Solicitação de Solicitação Procedimentos") — o
+    # XSD do padrão TISS é sequencial, ordem errada rejeita por schema
+    # inválido mesmo com todos os campos presentes. Corrigido aqui também
+    # `indicacaoClinica`, que antes desta rodada estava fora de ordem (logo
+    # após `ausenciaCodValidacao`, quando o manual mostra depois de
+    # `dataSolicitacao`).
     return (
         '<sch:solicitacaoSP-SADT>'
         '<sch:cabecalhoSolicitacao>'
         f'<sch:registroANS>{registro_ans}</sch:registroANS>'
         f'<sch:numeroGuiaPrestador>{numero_guia}</sch:numeroGuiaPrestador>'
         '</sch:cabecalhoSolicitacao>'
+        f'<sch:numeroGuiaPrincipal>{numero_guia_principal}</sch:numeroGuiaPrincipal>'
         '<sch:ausenciaCodValidacao>01</sch:ausenciaCodValidacao>'
-        f'<sch:indicacaoClinica>{indicacao_clinica}</sch:indicacaoClinica>'
+        f'<sch:codValidacao>{cod_validacao}</sch:codValidacao>'
         '<sch:tipoEtapaAutorizacao>1</sch:tipoEtapaAutorizacao>'
         '<sch:dadosBeneficiario>'
         f'<sch:numeroCarteira>{numero_carteira}</sch:numeroCarteira>'
@@ -129,6 +161,7 @@ def _solicitacao_sp_sadt_xml(guia, operator_config) -> str:
         '<sch:contratadoSolicitante><sch:codigoPrestadorNaOperadora>0</sch:codigoPrestadorNaOperadora></sch:contratadoSolicitante>'
         '<sch:nomeContratadoSolicitante>Clinica</sch:nomeContratadoSolicitante>'
         '<sch:profissionalSolicitante>'
+        f'<sch:nomeProfissional>{nome_profissional}</sch:nomeProfissional>'
         '<sch:conselhoProfissional>01</sch:conselhoProfissional>'
         '<sch:numeroConselhoProfissional>000000</sch:numeroConselhoProfissional>'
         '<sch:UF>35</sch:UF>'
@@ -137,12 +170,14 @@ def _solicitacao_sp_sadt_xml(guia, operator_config) -> str:
         '</sch:dadosSolicitante>'
         '<sch:caraterAtendimento>1</sch:caraterAtendimento>'
         f'<sch:dataSolicitacao>{data_solicitacao}</sch:dataSolicitacao>'
+        f'<sch:indicacaoClinica>{indicacao_clinica}</sch:indicacaoClinica>'
         '<sch:coberturaEspecial>01</sch:coberturaEspecial>'
         f'{procedimentos_xml}'
         '<sch:dadosExecutante>'
         '<sch:codigonaOperadora>0</sch:codigonaOperadora>'
         '<sch:CNES>0000000</sch:CNES>'
         '</sch:dadosExecutante>'
+        f'<sch:observacao>{observacao}</sch:observacao>'
         '</sch:solicitacaoSP-SADT>'
     )
 
@@ -186,6 +221,106 @@ def _cabecalho_xml(clinic, operator_config, sequencial_transacao: str) -> str:
         '</sch:loginSenhaPrestador>'
         '</sch:cabecalho>'
     )
+
+
+def _cancela_guia_cabecalho_xml(operator_config, sequencial_transacao: str) -> str:
+    """
+    <ans:cabecalho> da operação CANCELA_GUIA — schema confirmado contra o
+    exemplo oficial do manual Autorize 4.03.00, seção "b. XML Cancelamento
+    de Autorização" (página 30-31 do PDF `20260515_Autorize Integração
+    Tecnica Webservice - TISS 4.03.00.pdf`, logo após o exemplo de
+    `solicitacaoProcedimentoWS`).
+
+    Diferença confirmada contra `_cabecalho_xml` (SOLICITACAO_PROCEDIMENTOS):
+    o exemplo de CANCELA_GUIA no manual NÃO inclui `<ans:loginSenhaPrestador>`
+    dentro do cabeçalho — só `identificacaoTransacao`/`origem`/`destino`/
+    `Padrao`. Reproduzido fielmente aqui (não presumido) — se a Orizon
+    rejeitar por falta de autenticação em homologação real, revisar contra
+    suporte técnico antes de adicionar login/senha por conta própria.
+    """
+    now = datetime.now()
+    data_registro = now.strftime('%Y-%m-%d')
+    hora_registro = now.strftime('%H:%M:%S')
+    registro_ans = _esc(operator_config.registro_ans)
+
+    return (
+        '<ans:cabecalho>'
+        '<ans:identificacaoTransacao>'
+        '<ans:tipoTransacao>CANCELA_GUIA</ans:tipoTransacao>'
+        f'<ans:sequencialTransacao>{_esc(sequencial_transacao)}</ans:sequencialTransacao>'
+        f'<ans:dataRegistroTransacao>{data_registro}</ans:dataRegistroTransacao>'
+        f'<ans:horaRegistroTransacao>{hora_registro}</ans:horaRegistroTransacao>'
+        '</ans:identificacaoTransacao>'
+        '<ans:origem><ans:identificacaoPrestador>'
+        '<ans:codigoPrestadorNaOperadora>0</ans:codigoPrestadorNaOperadora>'
+        '</ans:identificacaoPrestador></ans:origem>'
+        f'<ans:destino><ans:registroANS>{registro_ans}</ans:registroANS></ans:destino>'
+        f'<ans:Padrao>{_esc(get_tiss_padrao_versao_orizon())}</ans:Padrao>'
+        '</ans:cabecalho>'
+    )
+
+
+def build_cancelamento_guia_xml(guia, clinic, operator_config, sequencial_transacao: str) -> tuple[str, str]:
+    """
+    Monta o envelope SOAP completo de `cancelaGuiaWS` (Autorize Orizon) para
+    cancelar UMA guia já autorizada previamente.
+
+    Schema confirmado (não adivinhado) contra o exemplo oficial do manual
+    Autorize 4.03.00, seção "b. XML Cancelamento de Autorização" (página
+    30-31 do PDF `20260515_Autorize Integração Tecnica Webservice - TISS
+    4.03.00.pdf`) — mesmo capítulo que documenta `solicitacaoProcedimentoWS`
+    (item "a."), logo antes de `comunicacaoBeneficiarioWS` (item "c.").
+
+    Estrutura confirmada: wrapper raiz `<ans:cancelaGuiaWS>` com
+    `cabecalho`/`cancelaGuia`/`hash` como filhos diretos (mesmo padrão "WS"
+    sem `<mensagemTISS>`/`<epilogo>` já usado em `solicitacaoProcedimentoWS`).
+    Dentro de `<ans:cancelaGuia>`: `<ans:dadosPrestador><ans:
+    codigoPrestadorNaOperadora>` e `<ans:tipoCancelamento><ans:
+    tipoCancelamentoGuia><ans:tipoGuia>`/`<ans:numeroGuiaPrestador>`. O
+    manual confirma explicitamente: "No cancelamento da Guia o campo Nº
+    Guia Operadora deve ser preenchido com o conteúdo da mensagem de
+    retorno da Solicitação de SP-SADT" — mas o próprio exemplo XML usa
+    `numeroGuiaPrestador` (não `numeroGuiaOperadora`) dentro de
+    `tipoCancelamentoGuia`; seguido aqui o exemplo XML literal (fonte
+    primária), não a prosa descritiva.
+
+    `tipoGuia=1` — SP-SADT (mesmo tipo de guia usado em
+    `build_solicitacao_procedimento_xml`; o manual não documenta a tabela
+    completa de `tipoGuia` neste capítulo, valor do próprio exemplo oficial).
+
+    Retorna (xml, hash_md5).
+    """
+    if guia is None:
+        raise OrizonAutorizeXMLBuilderError('guia_obrigatoria')
+
+    cabecalho_xml = _cancela_guia_cabecalho_xml(operator_config, sequencial_transacao)
+    numero_guia = _esc(guia.numero)
+
+    corpo_sem_hash = (
+        f'<ans:cancelaGuiaWS xmlns:ans="{SCH_NAMESPACE}">'
+        f'{cabecalho_xml}'
+        '<ans:cancelaGuia>'
+        '<ans:dadosPrestador><ans:codigoPrestadorNaOperadora>0</ans:codigoPrestadorNaOperadora></ans:dadosPrestador>'
+        '<ans:tipoCancelamento><ans:tipoCancelamentoGuia>'
+        '<ans:tipoGuia>1</ans:tipoGuia>'
+        f'<ans:numeroGuiaPrestador>{numero_guia}</ans:numeroGuiaPrestador>'
+        '</ans:tipoCancelamentoGuia></ans:tipoCancelamento>'
+        '</ans:cancelaGuia>'
+    )
+
+    # Mesma regra de hash já aplicada em build_solicitacao_procedimento_xml
+    # (assumida por analogia — o manual não detalha a regra de hash para
+    # nenhuma operação do Autorize, só mostra `<ans:hash>?</ans:hash>` como
+    # placeholder no exemplo).
+    hash_md5 = hashlib.md5(corpo_sem_hash.encode('utf-8')).hexdigest()
+
+    xml_completo = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'{corpo_sem_hash}'
+        f'<ans:hash>{hash_md5}</ans:hash>'
+        '</ans:cancelaGuiaWS>'
+    )
+    return xml_completo, hash_md5
 
 
 def build_solicitacao_procedimento_xml(guia, clinic, operator_config, sequencial_transacao: str) -> tuple[str, str]:

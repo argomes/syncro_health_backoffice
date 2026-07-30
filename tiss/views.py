@@ -22,6 +22,7 @@ from .permissions import IsTISSAuthorized
 from .services import (
     enviar_lote, TISSServiceError,
     consultar_elegibilidade_automatica, registrar_elegibilidade_manual,
+    disparar_cancelamento_guia,
 )
 from . import xmldsig_service
 from .xmldsig_service import XMLDSigServiceError
@@ -126,6 +127,40 @@ class TISSGuiaViewSet(viewsets.ReadOnlyModelViewSet):
         if status_filter:
             qs = qs.filter(status=status_filter)
         return qs
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticatedByLicenseKey])
+def cancelar_guia_view(request):
+    """
+    POST /api/tiss/guias/cancelar/ — BACFF-014 (2026-07-30). Consumido pelo
+    Edge Gateway (autenticado por license_key, mesmo padrão de
+    `verificar_elegibilidade`) quando a recepção cancela um
+    atendimento/agendamento que já tinha guia/autorização Orizon emitida.
+    Dispara o cancelamento automático junto à operadora (assíncrono, via
+    Celery — não bloqueia a resposta ao gateway).
+
+    Body: {appointment_id}. Identifica a guia por (clinic, appointment_id) —
+    isolamento multi-tenant: nunca cancela guia de outra clínica.
+    """
+    clinic = request.clinic
+    appointment_id = request.data.get('appointment_id')
+    if not appointment_id:
+        return Response({'error': 'appointment_id_obrigatorio'}, status=status.HTTP_400_BAD_REQUEST)
+
+    guia = (
+        TISSGuia.objects.filter(clinic=clinic, appointment_id=appointment_id)
+        .order_by('-created_at')
+        .first()
+    )
+    if guia is None:
+        return Response({'error': 'guia_nao_encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    cancelamento_enfileirado = disparar_cancelamento_guia(guia)
+    return Response(
+        {'guia_id': str(guia.id), 'cancelamento_enfileirado': cancelamento_enfileirado},
+        status=status.HTTP_202_ACCEPTED,
+    )
 
 
 @api_view(['GET'])

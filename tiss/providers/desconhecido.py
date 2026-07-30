@@ -57,6 +57,10 @@ def enviar_documento_assinado(xml_final, operator_config, mock_scenario='success
     raise ProviderNaoConfirmado(_MENSAGEM)
 
 
+def cancelar_guia(clinic, operator_config, guia, mock_scenario='success'):
+    raise ProviderNaoConfirmado(_MENSAGEM)
+
+
 def health_check(operator_config) -> ProviderHealth:
     """
     Não sonda nada: não sabemos sequer se este endpoint é SOAP. Devolver
