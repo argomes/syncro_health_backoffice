@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'tiss',
     'holidays',
     'municipios',
+    'zipcode',
 ]
 
 MIDDLEWARE = [
@@ -401,6 +402,12 @@ UNFOLD = {
                         "icon": "map",
                         "link": reverse_lazy("admin:municipios_municipio_changelist"),
                         "permission": lambda request: request.user.has_perm("municipios.view_municipio"),
+                    },
+                    {
+                        "title": "CEPs",
+                        "icon": "map",
+                        "link": reverse_lazy("admin:zipcode_cep_changelist"),
+                        "permission": lambda request: request.user.has_perm("zipcode.view_cep"),
                     },
                     # CBO e CID-10 não existem neste repo (dado do Edge
                     # Gateway hoje) — feature nova, fora de escopo desta

@@ -81,6 +81,7 @@ urlpatterns = [
     path('api/tiss/', include('tiss.urls')),
     path('api/holidays/', include('holidays.urls')),
     path('api/municipios/', include('municipios.urls')),
+    path('api/ceps/', include('zipcode.urls')),
 
     # TASK-BO-12 — "esqueci minha senha" pra SupportUser (equipe interna,
     # AUTH_USER_MODEL). Views built-in do Django puras — SupportUser é o
