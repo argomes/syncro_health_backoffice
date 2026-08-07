@@ -138,6 +138,40 @@ class ClinicViewSet(viewsets.ModelViewSet):
     @action(
         detail=False,
         methods=['post'],
+        url_path='db-access-revoke',
+        permission_classes=[IsAuthenticatedByLicenseKey],
+        throttle_classes=[DbAccessGrantRateThrottle],
+    )
+    def db_access_revoke(self, request):
+        """
+        Encerra imediatamente um acesso remoto concedido via db-access-grant
+        (BUGFIX-24/QABUG-REMOTESUPPORT-001). O grant vive só em cache — não há
+        role/conexão Postgres real criada por essa concessão (a senha
+        entregue é apenas a credencial já existente do db_user escopado da
+        clínica), então revogar é remover a chave do cache: qualquer
+        conexão/consulta do suporte que dependa desse grant deixa de
+        encontrar a credencial liberada a partir daqui.
+
+        Idempotente: chamar sem grant ativo (já expirado ou nunca concedido)
+        também retorna 200 com revoked=True — do ponto de vista do
+        solicitante, o estado final ("sem acesso concedido") é o mesmo.
+        """
+        clinic: Clinic = request.clinic
+
+        cache_key = f"clinic_db_grant:{clinic.id}"
+        had_grant = cache.get(cache_key) is not None
+        cache.delete(cache_key)
+
+        logger.info(
+            "db_access_revoke clinic_id=%s had_grant=%s",
+            clinic.id, had_grant,
+        )  # nunca logar a senha
+
+        return Response({'revoked': True})
+
+    @action(
+        detail=False,
+        methods=['post'],
         url_path='validate-license',
         permission_classes=[IsAuthenticatedByAnyLicenseKey],
     )
