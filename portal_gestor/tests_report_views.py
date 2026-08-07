@@ -167,6 +167,37 @@ class ProfessionalsReportViewTest(TestCase):
         mock_read.assert_not_called()
         self.assertEqual(PortalReadAuditLog.objects.count(), 0)
 
+    @patch('portal_gestor.report_reads.read_medical_records_report')
+    def test_medical_records_report_happy_path(self, mock_read):
+        mock_read.return_value = [{'id': 'mr-1', 'patient_id': 'p-1', 'finalized': True}]
+        auth = self._login('gerente@a.com')
+
+        response = self.client.get(
+            f'/portal/api/reports/sessions/{self.session.session_id}/medical-records/', **auth
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        mock_read.assert_called_once_with(self.clinic_a, self.session)
+
+    @patch('portal_gestor.report_reads.read_medical_records_report')
+    def test_medical_records_other_clinic_gets_404_not_leak_of_existence(self, mock_read):
+        """TASK-BO-19 — teste de isolamento explícito: a clínica B nunca
+        consegue ler o metadado de prontuário de um paciente da clínica A,
+        mesmo autenticada e mesmo sabendo o session_id (IDOR clássico) —
+        `_ReportReadView.get` resolve a sessão sempre escopada ao
+        `request.user.clinic`, então uma sessão de outra clínica simplesmente
+        não existe do ponto de vista da query, e o read_fn nem chega a rodar."""
+        auth_b = self._login('gerente@b.com')
+
+        response = self.client.get(
+            f'/portal/api/reports/sessions/{self.session.session_id}/medical-records/', **auth_b
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_read.assert_not_called()
+        self.assertEqual(PortalReadAuditLog.objects.count(), 0)
+
 
 class PortalReadAuditLogTest(TestCase):
     """
@@ -183,7 +214,7 @@ class PortalReadAuditLogTest(TestCase):
 
         self.session = services.create_report_session(
             clinic=self.clinic_a, created_by=self.user_a,
-            entities=['patients', 'appointments', 'professionals'],
+            entities=['patients', 'appointments', 'professionals', 'medical_records'],
             date_from=timezone.now() - timedelta(days=1), date_to=timezone.now(),
         )
         self.session.status = ReportSessionStatus.KEY_DELIVERED
@@ -237,6 +268,20 @@ class PortalReadAuditLogTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         log = PortalReadAuditLog.objects.get()
         self.assertEqual(log.entity, 'professionals')
+        self.assertEqual(log.record_count, 1)
+
+    @patch('portal_gestor.report_reads.read_medical_records_report')
+    def test_audit_log_written_for_medical_records_view(self, mock_read):
+        mock_read.return_value = [{'id': 'mr-1'}]
+        auth = self._login()
+
+        response = self.client.get(
+            f'/portal/api/reports/sessions/{self.session.session_id}/medical-records/', **auth
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        log = PortalReadAuditLog.objects.get()
+        self.assertEqual(log.entity, 'medical_records')
         self.assertEqual(log.record_count, 1)
 
     @patch('portal_gestor.report_reads.read_patients_report')

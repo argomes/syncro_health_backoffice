@@ -142,6 +142,22 @@ class ProfessionalsReportView(_ReportReadView):
     entity_name = 'professionals'
 
 
+class MedicalRecordsReportView(_ReportReadView):
+    """
+    GET /portal/api/reports/sessions/{session_id}/medical-records/
+
+    TASK-BO-19 — listagem de metadados de prontuário (id, appointment_id,
+    patient_id, professional_id, finalized, version). Mesmo padrão anti-IDOR
+    das demais views (404 — nunca 403 — para sessão de outra clínica, via
+    `ReportSession.objects.get(session_id=..., clinic=request.user.clinic)`
+    em `_ReportReadView.get`). A entidade `medical_records` sincroniza
+    push-only para a nuvem via MedicalRecordSyncStrategy (syncro_gateway,
+    EDGW-078) — só metadados de referência, nunca o conteúdo clínico (SOAP).
+    """
+    read_fn_name = 'read_medical_records_report'
+    entity_name = 'medical_records'
+
+
 class DashboardSummaryView(APIView):
     """
     GET /portal/api/dashboard/summary/ — payload consolidado para a tela

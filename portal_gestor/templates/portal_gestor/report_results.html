@@ -66,6 +66,30 @@
             {% endif %}
         {% endif %}
 
+        {% if medical_records is not None %}
+            <h2>Metadados de Prontuário ({{ medical_records|length }})</h2>
+            {% if medical_records %}
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Paciente</th><th>Agendamento</th><th>Profissional</th><th>Finalizado</th><th>Atualizado em</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for mr in medical_records %}
+                            <tr>
+                                <td>{{ mr.patient_id }}</td>
+                                <td>{{ mr.appointment_id }}</td>
+                                <td>{{ mr.professional_id }}</td>
+                                <td>{% if mr.finalized %}Sim{% else %}Não{% endif %}</td>
+                                <td>{{ mr.updated_at }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p class="muted">Nenhum metadado de prontuário disponível ainda nesta janela.</p>
+            {% endif %}
+        {% endif %}
+
         <p class="muted">
             A sincronização pode continuar em segundo plano — recarregue esta página
             mais tarde se esperava mais registros.

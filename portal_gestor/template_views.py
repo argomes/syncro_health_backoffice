@@ -305,6 +305,8 @@ class ReportResultsView(View):
                 context['patients'] = report_reads.read_patients_report(request.clinic, session)
             if 'appointments' in session.entities_scope:
                 context['appointments'] = report_reads.read_appointments_report(request.clinic, session)
+            if 'medical_records' in session.entities_scope:
+                context['medical_records'] = report_reads.read_medical_records_report(request.clinic, session)
         except PermissionDenied:
             context = {
                 'session': session,

@@ -39,6 +39,11 @@
                        {% if not form_data or 'appointments' in form_data.entities %}checked{% endif %}>
                 Agendamentos
             </label>
+            <label class="checkbox-label">
+                <input type="checkbox" name="entities" value="medical_records"
+                       {% if form_data and 'medical_records' in form_data.entities %}checked{% endif %}>
+                Metadados de prontuário (sem conteúdo clínico)
+            </label>
         </fieldset>
 
         <button type="submit" class="button">Gerar Relatório</button>

@@ -170,6 +170,21 @@ class ReportReadsAccessControlTest(TestCase):
         with self.assertRaises(PermissionDenied):
             report_reads.read_professionals_report(self.clinic, session)
 
+    def test_medical_records_entity_not_in_scope_rejected(self):
+        session = self._make_session(entities=['patients'])
+        with self.assertRaises(PermissionDenied):
+            report_reads.read_medical_records_report(self.clinic, session)
+
+    def test_medical_records_expired_session_rejected(self):
+        session = self._make_session(entities=['medical_records'], expires_delta=timedelta(seconds=-1))
+        with self.assertRaises(PermissionDenied):
+            report_reads.read_medical_records_report(self.clinic, session)
+
+    def test_medical_records_missing_key_in_cache_rejected(self):
+        session = self._make_session(entities=['medical_records'], put_key_in_cache=False)
+        with self.assertRaises(PermissionDenied):
+            report_reads.read_medical_records_report(self.clinic, session)
+
     def test_expired_session_rejected(self):
         session = self._make_session(expires_delta=timedelta(seconds=-1))
         with self.assertRaises(PermissionDenied):
@@ -200,7 +215,8 @@ class ReportReadsHappyPathTest(TestCase):
         cache.clear()
         self.clinic = make_clinic()
         self.session = services.create_report_session(
-            clinic=self.clinic, created_by=None, entities=['patients', 'appointments', 'professionals'],
+            clinic=self.clinic, created_by=None,
+            entities=['patients', 'appointments', 'professionals', 'medical_records'],
             date_from=timezone.now() - timedelta(days=1), date_to=timezone.now(),
         )
         self.session.status = ReportSessionStatus.KEY_DELIVERED
@@ -385,5 +401,38 @@ class ReportReadsHappyPathTest(TestCase):
         mock_conn_ctx.return_value = self._mock_connection([])
 
         results = report_reads.read_professionals_report(self.clinic, self.session)
+
+        self.assertEqual(results, [])
+
+    @patch('portal_gestor.report_reads.clinic_db_connection')
+    def test_reads_medical_record_row_correctly(self, mock_conn_ctx):
+        """`medical_records` (TASK-BO-19) também não usa envelope de
+        criptografia — a tabela remota só tem metadados de referência (o SOAP
+        clínico nunca sai do SQLite local do gateway, ver EDGW-078). Confere
+        que a leitura reflete exatamente o fixture, sem decriptação."""
+        record_id = uuid.uuid4()
+        appointment_id = uuid.uuid4()
+        patient_id = uuid.uuid4()
+        professional_id = uuid.uuid4()
+        row = (record_id, appointment_id, patient_id, professional_id, True, 3, timezone.now())
+        mock_conn_ctx.return_value = self._mock_connection([row])
+
+        results = report_reads.read_medical_records_report(self.clinic, self.session)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['id'], str(record_id))
+        self.assertEqual(results[0]['appointment_id'], str(appointment_id))
+        self.assertEqual(results[0]['patient_id'], str(patient_id))
+        self.assertEqual(results[0]['professional_id'], str(professional_id))
+        self.assertEqual(results[0]['finalized'], True)
+        self.assertEqual(results[0]['version'], 3)
+        self.assertNotIn('queixa', results[0])
+        self.assertNotIn('conduta', results[0])
+
+    @patch('portal_gestor.report_reads.clinic_db_connection')
+    def test_medical_records_empty_result_returns_empty_list_not_error(self, mock_conn_ctx):
+        mock_conn_ctx.return_value = self._mock_connection([])
+
+        results = report_reads.read_medical_records_report(self.clinic, self.session)
 
         self.assertEqual(results, [])
