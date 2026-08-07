@@ -21,6 +21,7 @@ from django.db import transaction
 from .models import (
     TISSLote, TISSLoteStatus, TISSGuia, TISSGuiaStatus, TISSGlosa,
     TISSElegibilidadeConsulta, TISSElegibilidadeOrigem, TISSElegibilidadeStatus,
+    TISSAutorizacaoPendente, TISSAutorizacaoSituacao,
 )
 from . import providers
 from .providers.base import (  # noqa: F401 — reexport histórico (ver nota abaixo)
@@ -214,9 +215,48 @@ def consultar_elegibilidade_automatica(
     _log_elegibilidade(
         clinic, operator_config, appointment_id, TISSElegibilidadeOrigem.AUTOMATICA,
         resultado.status_operacional, resultado.erro_mensagem
-        if resultado.status_operacional != TISSElegibilidadeStatus.SUCESSO else '',
+        if resultado.status_operacional not in (TISSElegibilidadeStatus.SUCESSO, TISSElegibilidadeStatus.EM_ANALISE)
+        else '',
     )
+
+    if resultado.status_operacional == TISSElegibilidadeStatus.EM_ANALISE:
+        _registrar_autorizacao_pendente(clinic, operator_config, appointment_id, resultado.numero_guia_prestador)
+
     return resultado
+
+
+def _registrar_autorizacao_pendente(clinic, operator_config, appointment_id: str, numero_guia_prestador: str):
+    """
+    BO-08.5 — Registra (idempotentemente) a pendência de acompanhamento
+    quando a operadora responde "Em Análise". `get_or_create` chaveado por
+    (clinic, operator_config, numero_guia_prestador) — mesma tripla da
+    constraint `unique_together` do model — garante que reconsultas repetidas
+    da mesma guia (retry do gateway, novo clique do usuário) antes da
+    operadora decidir NUNCA criam uma segunda linha de pendência: a task
+    periódica sempre encontra no máximo uma pendência por guia.
+
+    Sem `numero_guia_prestador` (chamada avulsa sem `appointment_id` e sem
+    guia real) não há como montar a consulta de status depois — loga um
+    aviso técnico e não persiste nada em vez de guardar um registro que
+    nunca poderá ser resolvido automaticamente.
+    """
+    if not numero_guia_prestador:
+        logger.warning(
+            'tiss.services: autorização em análise sem numero_guia_prestador '
+            '(clinic=%s, operator_config=%s) — não é possível registrar pendência de consulta automática.',
+            clinic.id, operator_config.id,
+        )
+        return
+
+    TISSAutorizacaoPendente.objects.get_or_create(
+        clinic=clinic,
+        operator_config=operator_config,
+        numero_guia_prestador=numero_guia_prestador,
+        defaults={
+            'appointment_id': appointment_id,
+            'situacao': TISSAutorizacaoSituacao.EM_ANALISE,
+        },
+    )
 
 
 def registrar_elegibilidade_manual(

@@ -16,6 +16,8 @@ manual do suporte, visível no Django Admin (ver `tiss/admin.py`).
 import logging
 
 from celery import shared_task
+from django.db.models import F
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -124,3 +126,177 @@ def _tratar_falha(task, guia, operator_config, erro_mensagem: str, transitorio: 
     pendente.ultimo_erro = sanitizar_erro_operadora(erro_mensagem)
     pendente.resolvido = False
     pendente.save(update_fields=['tentativas', 'falhou_apos_retries', 'ultimo_erro', 'resolvido', 'updated_at'])
+
+
+# ---------------------------------------------------------------------------
+# BO-08.5 — Polling periódico de autorizações "Em Análise"
+# ---------------------------------------------------------------------------
+#
+# Decisão de infra (2026-08-06, mesma sessão que introduziu CELERY_BEAT_
+# SCHEDULE pela primeira vez no projeto para EDGW-038/WhatsApp): task
+# PERIÓDICA via Celery Beat, não management command + cron externo — padrão
+# antigo (`purgar_operator_call_log`, `purge_old_backups`) só existia porque
+# não havia Beat configurado. Ver `CELERY_BEAT_SCHEDULE` em
+# `syncro_backoffice/settings.py`.
+#
+# Diferente de `cancelar_guia_task` (disparada uma vez por evento, com
+# retry/backoff próprio): esta task roda em CICLOS regulares e varre TODAS as
+# pendências não resolvidas a cada execução — o "retry" de uma pendência
+# individual não é `self.retry()`, é simplesmente ela continuar aparecendo no
+# próximo ciclo porque `resolvido` continua False. Por isso não usa
+# `bind=True`/`max_retries` como `cancelar_guia_task`: não há um número fixo
+# de tentativas, a pendência fica na fila até a operadora responder ou até
+# alguém investigar manualmente via Django Admin.
+
+
+@shared_task
+def consultar_autorizacoes_pendentes_task():
+    """
+    Varre `TISSAutorizacaoPendente` com `resolvido=False`, consulta o status
+    de cada uma via `provider.consultar_status_autorizacao`
+    (`tissSolicitacaoStatusAutorizacao_Operation` na Orizon) e atualiza o
+    registro local quando a operadora já respondeu em definitivo (autorizado/
+    negado).
+
+    Isolamento de falha por item: uma pendência com erro de rede/parsing
+    NUNCA impede as demais de serem consultadas no mesmo ciclo — cada
+    pendência é tratada em `_consultar_uma_pendente_status`, que captura
+    qualquer exceção própria. A task inteira também nunca propaga exceção
+    para o Celery: erro de infraestrutura (ex.: banco indisponível ao montar
+    o queryset) é logado e a task termina sem lançar, para não gerar retry
+    em avalanche do Beat nem marcar a execução como falha ruidosa — o próximo
+    ciclo agendado (5-10min) tenta de novo naturalmente.
+    """
+    from .models import TISSAutorizacaoPendente
+
+    try:
+        pendentes = list(
+            TISSAutorizacaoPendente.objects.select_related('clinic', 'operator_config')
+            .filter(resolvido=False)
+        )
+    except Exception:  # noqa: BLE001 — falha de infra ao montar a query não pode propagar para o Celery
+        logger.exception('consultar_autorizacoes_pendentes_task: falha ao buscar pendências; tenta no próximo ciclo.')
+        return
+
+    if not pendentes:
+        logger.info('consultar_autorizacoes_pendentes_task: nenhuma autorização pendente para consultar.')
+        return
+
+    logger.info(
+        'consultar_autorizacoes_pendentes_task: consultando %s autorização(ões) pendente(s).', len(pendentes),
+    )
+    for pendente in pendentes:
+        _consultar_uma_pendente_status(pendente)
+
+
+def _consultar_uma_pendente_status(pendente):
+    """
+    Consulta o status de UMA `TISSAutorizacaoPendente` e persiste o
+    resultado. Nunca levanta — qualquer falha (rede, timeout, provider
+    desativado/não registrado, erro inesperado de parsing) é logada e a
+    pendência permanece `resolvido=False` para o próximo ciclo tentar de
+    novo; só registra `tentativas_consulta`/`ultimo_erro_consulta` para dar
+    visibilidade no Django Admin de quantas vezes já tentamos sem sucesso.
+
+    Idempotência (requisito BO-08.5): a transição para terminal usa
+    `.filter(pk=pendente.pk, resolvido=False).update(...)` — mesmo se este
+    método fosse chamado duas vezes para a MESMA pendência (não deveria
+    acontecer dentro de um único ciclo, já que o queryset é materializado uma
+    vez por execução, mas é uma garantia barata contra corrida entre workers
+    concorrentes do Beat), a segunda chamada não encontra linha para
+    atualizar (já `resolvido=True`) e não duplica efeito nenhum (sem
+    log duplicado, sem alerta duplicado — só a condição do WHERE muda).
+    """
+    from .models import TISSAutorizacaoPendente, TISSAutorizacaoSituacao, sanitizar_erro_operadora
+    from . import providers
+    from .providers.base import ProviderError
+
+    try:
+        provider = providers.resolve(pendente.operator_config)
+    except ProviderError as exc:
+        logger.warning(
+            'consultar_autorizacoes_pendentes_task: operator_config %s indisponível (%s); '
+            'pendência %s permanece para o próximo ciclo.',
+            pendente.operator_config_id, exc.code, pendente.id,
+        )
+        TISSAutorizacaoPendente.objects.filter(pk=pendente.pk, resolvido=False).update(
+            tentativas_consulta=F('tentativas_consulta') + 1,
+            ultima_consulta_em=timezone.now(),
+            ultimo_erro_consulta=sanitizar_erro_operadora(f'{exc.code}: {exc}'),
+        )
+        return
+
+    try:
+        resultado = provider.consultar_status_autorizacao(
+            pendente.clinic, pendente.operator_config,
+            numero_guia_prestador=pendente.numero_guia_prestador,
+            numero_guia_operadora=pendente.numero_guia_operadora,
+        )
+    except providers.OperacaoNaoSuportada:
+        # Provider trocado para um que não implementa a operação depois da
+        # pendência já existir (ex.: mudança de gateway_provider no admin).
+        # Não é erro transitório — registra e segue para a próxima pendência,
+        # sem incrementar tentativas indefinidamente por algo que nenhum
+        # ciclo futuro vai resolver sozinho (precisa de ação humana).
+        logger.warning(
+            'consultar_autorizacoes_pendentes_task: provider de %s não implementa consulta de status; '
+            'pendência %s exige revisão manual.',
+            pendente.operator_config_id, pendente.id,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 — timeout/erro de rede/parsing nunca pode derrubar o ciclo
+        logger.error(
+            'consultar_autorizacoes_pendentes_task: erro inesperado consultando pendência %s: %s',
+            pendente.id, type(exc).__name__,
+        )
+        TISSAutorizacaoPendente.objects.filter(pk=pendente.pk, resolvido=False).update(
+            tentativas_consulta=F('tentativas_consulta') + 1,
+            ultima_consulta_em=timezone.now(),
+            ultimo_erro_consulta=sanitizar_erro_operadora(f'erro_inesperado: {exc}'),
+        )
+        return
+
+    if not resultado.sucesso:
+        # Falha de CONSULTA (rede/fault da operadora na própria consulta de
+        # status) — trivialmente re-tentável no próximo ciclo, não altera
+        # `situacao` da pendência.
+        logger.warning(
+            'consultar_autorizacoes_pendentes_task: falha ao consultar status da pendência %s (%s): %s',
+            pendente.id, resultado.erro_code, resultado.erro_mensagem,
+        )
+        TISSAutorizacaoPendente.objects.filter(pk=pendente.pk, resolvido=False).update(
+            tentativas_consulta=F('tentativas_consulta') + 1,
+            ultima_consulta_em=timezone.now(),
+            ultimo_erro_consulta=sanitizar_erro_operadora(resultado.erro_mensagem or resultado.erro_code),
+        )
+        return
+
+    if resultado.situacao == TISSAutorizacaoSituacao.EM_ANALISE:
+        # Operadora respondeu, mas a decisão ainda não saiu — só registra que
+        # tentamos, sem mudar `situacao`/`resolvido`.
+        TISSAutorizacaoPendente.objects.filter(pk=pendente.pk, resolvido=False).update(
+            tentativas_consulta=F('tentativas_consulta') + 1,
+            ultima_consulta_em=timezone.now(),
+            ultimo_erro_consulta='',
+        )
+        return
+
+    # AUTORIZADO ou NEGADO — resposta TERMINAL da operadora. `resolvido=False`
+    # no filtro garante que, se por algum motivo esta pendência já tivesse
+    # sido resolvida por outra execução concorrente, este UPDATE simplesmente
+    # não afeta nenhuma linha (idempotência — sem log/alerta duplicado).
+    linhas_afetadas = TISSAutorizacaoPendente.objects.filter(pk=pendente.pk, resolvido=False).update(
+        situacao=resultado.situacao,
+        numero_guia_operadora=resultado.numero_guia_operadora or pendente.numero_guia_operadora,
+        codigo_glosa=resultado.codigo_glosa,
+        descricao_glosa=sanitizar_erro_operadora(resultado.descricao_glosa),
+        resolvido=True,
+        tentativas_consulta=F('tentativas_consulta') + 1,
+        ultima_consulta_em=timezone.now(),
+        ultimo_erro_consulta='',
+    )
+    if linhas_afetadas:
+        logger.info(
+            'consultar_autorizacoes_pendentes_task: pendência %s resolvida (%s).',
+            pendente.id, resultado.situacao,
+        )

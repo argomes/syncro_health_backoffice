@@ -209,6 +209,13 @@ class ElegibilidadeRespostaCompleta:
     numero_guia_operadora: str = ''
     erro_mensagem: str = ''
     status_operacional: str = TISSElegibilidadeStatus.SUCESSO
+    # BO-08.5: numeroGuiaPrestador usado para montar a solicitação — só
+    # preenchido pelos providers que suportam `consulta_status` (hoje,
+    # Orizon). É a chave que `services._registrar_autorizacao_pendente` usa
+    # para criar `TISSAutorizacaoPendente` quando `status_operacional ==
+    # EM_ANALISE`; sem ele a pendência não pode ser consultada depois, então
+    # não é registrada (loga um aviso em vez de persistir algo inútil).
+    numero_guia_prestador: str = ''
 
 
 @dataclass
@@ -252,6 +259,31 @@ class CancelamentoResultado:
     """
     sucesso: bool
     numero_guia_operadora: str = ''
+    raw_response: str = ''
+    erro_code: str = ''
+    erro_mensagem: str = ''
+
+
+@dataclass
+class StatusAutorizacaoResultado:
+    """
+    BO-08.5 — retorno normalizado de `provider.consultar_status_autorizacao`
+    (`tissSolicitacaoStatusAutorizacao_Operation` na Orizon). Mesmo espírito
+    de `CancelamentoResultado`: nunca levanta exceção de transporte, devolve
+    `sucesso=False` com `erro_code`/`erro_mensagem` técnicos — quem traduz
+    para `TISSAutorizacaoPendente` é a task periódica
+    (`tiss/tasks.py::consultar_autorizacoes_pendentes_task`), não o provider.
+
+    `sucesso` aqui descreve a CONSULTA (a operadora respondeu algo
+    processável), não o resultado de negócio — `situacao` continua
+    `TISSAutorizacaoSituacao.EM_ANALISE` quando a operadora ainda não decidiu;
+    isso não é uma falha de consulta.
+    """
+    sucesso: bool
+    situacao: str = ''
+    numero_guia_operadora: str = ''
+    codigo_glosa: str = ''
+    descricao_glosa: str = ''
     raw_response: str = ''
     erro_code: str = ''
     erro_mensagem: str = ''

@@ -200,6 +200,21 @@ def cancelar_guia(clinic, operator_config, guia, mock_scenario='success') -> Can
     )
 
 
+def consultar_status_autorizacao(clinic, operator_config, numero_guia_prestador,
+                                  numero_guia_operadora='', mock_scenario='em_analise'):
+    """
+    BO-08.5 — `tissSolicitacaoStatusProtocolo`/`tissSolicitacaoStatusAutorizacao`
+    existem no padrão ANS publicado, mas não há client de transporte
+    implementado para esse dialeto ainda (mesma limitação já documentada
+    para `cancelar_guia` acima). Falha alto e explícito — nunca fallback
+    silencioso para o Autorize Orizon.
+    """
+    raise OperacaoNaoSuportada(
+        'Consulta de status de autorização no dialeto genérico ANS ainda não tem client implementado. '
+        'Consulta automática só está disponível hoje para o provider orizon.'
+    )
+
+
 def health_check(operator_config) -> ProviderHealth:
     return wsdl_health_check(operator_config.connection.endpoint_url, 'generico_ans')
 

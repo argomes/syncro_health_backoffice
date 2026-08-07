@@ -30,7 +30,7 @@ from . import desconhecido, generico_ans, orizon
 from .base import (  # noqa: F401 — reexport: o contrato é importado daqui
     CancelamentoResultado, ElegibilidadeRespostaCompleta, EnvioLoteResultado, ProviderCapabilities,
     ProviderHealth, ProviderError, OperadoraDesativada, ProviderNaoRegistrado, ProviderNaoConfirmado,
-    OperacaoNaoSuportada,
+    OperacaoNaoSuportada, StatusAutorizacaoResultado,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,11 @@ _OUTCOME_POR_ERRO_CANCELAMENTO = {
     'soap_fault': OperatorCallOutcome.SOAP_FAULT,
 }
 
+_OUTCOME_POR_ERRO_CONSULTA_STATUS = {
+    'soap_network_error': OperatorCallOutcome.NETWORK_ERROR,
+    'soap_fault': OperatorCallOutcome.SOAP_FAULT,
+}
+
 
 class _InstrumentedProvider:
     """
@@ -232,6 +237,36 @@ class _InstrumentedProvider:
             outcome = _OUTCOME_POR_ERRO_CANCELAMENTO.get(resultado.erro_code, OperatorCallOutcome.PROVIDER_ERROR)
         _registrar_chamada(
             self._operator_config, OperatorCallOperation.CANCELAMENTO, outcome,
+            int((time.perf_counter() - inicio) * 1000),
+        )
+        return resultado
+
+    def consultar_status_autorizacao(self, clinic, operator_config, numero_guia_prestador,
+                                     numero_guia_operadora='', mock_scenario='em_analise') -> StatusAutorizacaoResultado:
+        """
+        BO-08.5 — instrumentado como as demais chamadas de negócio (§4.4(a)):
+        a task periódica de polling é tráfego real com a operadora, e sua
+        saúde deve compor o mesmo dashboard.
+        """
+        inicio = time.perf_counter()
+        try:
+            resultado = self._modulo.consultar_status_autorizacao(
+                clinic, operator_config, numero_guia_prestador,
+                numero_guia_operadora=numero_guia_operadora, mock_scenario=mock_scenario,
+            )
+        except ProviderError:
+            _registrar_chamada(
+                self._operator_config, OperatorCallOperation.CONSULTA_STATUS,
+                OperatorCallOutcome.PROVIDER_ERROR, int((time.perf_counter() - inicio) * 1000),
+            )
+            raise
+
+        if resultado.sucesso:
+            outcome = OperatorCallOutcome.SUCCESS
+        else:
+            outcome = _OUTCOME_POR_ERRO_CONSULTA_STATUS.get(resultado.erro_code, OperatorCallOutcome.PROVIDER_ERROR)
+        _registrar_chamada(
+            self._operator_config, OperatorCallOperation.CONSULTA_STATUS, outcome,
             int((time.perf_counter() - inicio) * 1000),
         )
         return resultado
