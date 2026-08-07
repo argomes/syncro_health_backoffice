@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     'holidays',
     'municipios',
     'zipcode',
+    'backup',
 ]
 
 MIDDLEWARE = [
@@ -587,6 +588,31 @@ if not DEBUG and not TISS_FERNET_KEY:
         'produção equivale a não cifrar nada, pois a chave é pública neste '
         'repositório. Configure TISS_FERNET_KEY (gerar com '
         '`Fernet.generate_key()`).'
+    )
+
+# EDGW-044 (Fase 1) — backup semanal do SQLite do gateway para S3. As
+# credenciais AWS reais vivem exclusivamente aqui (backoffice/backup/services.py);
+# o gateway nunca as recebe, só uma presigned URL de curto prazo (ver
+# backup/views.py). Mesmo padrão de fail-fast já usado para TISS_FERNET_KEY:
+# sem essas variáveis em produção, o boot quebra em vez de deixar o backup
+# quebrado silenciosamente na primeira tentativa (que só seria notada 1
+# semana depois, no ciclo seguinte do BackupWorker).
+BACKUP_AWS_ACCESS_KEY = env('BACKUP_AWS_ACCESS_KEY', default=None)
+BACKUP_AWS_SECRET_KEY = env('BACKUP_AWS_SECRET_KEY', default=None)
+BACKUP_S3_BUCKET = env('BACKUP_S3_BUCKET', default=None)
+BACKUP_AWS_REGION = env('BACKUP_AWS_REGION', default='us-east-1')
+BACKUP_PRESIGNED_TTL_SECONDS = env.int('BACKUP_PRESIGNED_TTL_SECONDS', default=900)
+# 14 dias (2 ciclos do backup semanal) — decisão documentada em
+# GATEWAY-TASKS.md (EDGW-044): base legal LGPD Art. 16, retenção mínima
+# suficiente pra recuperar de um full corrompido sem acumular dado além do
+# necessário.
+BACKUP_RETENTION_DAYS = env.int('BACKUP_RETENTION_DAYS', default=14)
+if not DEBUG and not (BACKUP_AWS_ACCESS_KEY and BACKUP_AWS_SECRET_KEY and BACKUP_S3_BUCKET):
+    raise RuntimeError(
+        'BACKUP_AWS_ACCESS_KEY/BACKUP_AWS_SECRET_KEY/BACKUP_S3_BUCKET não '
+        'configurados com DEBUG=False. Sem eles, o backoffice não consegue '
+        'emitir presigned URLs e o backup semanal do gateway fica quebrado '
+        'silenciosamente (EDGW-044).'
     )
 
 # Diretório com os XSDs oficiais ANS (tissV4_02_00.xsd e includes) usados

@@ -79,6 +79,7 @@ urlpatterns = [
     path('api/accounts/', include('accounts.urls')),
     path('api/support/', include('support.urls')),
     path('api/tiss/', include('tiss.urls')),
+    path('api/backup/', include('backup.urls')),
     path('api/holidays/', include('holidays.urls')),
     path('api/municipios/', include('municipios.urls')),
     path('api/ceps/', include('zipcode.urls')),
