@@ -61,6 +61,12 @@ def cancelar_guia(clinic, operator_config, guia, mock_scenario='success'):
     raise ProviderNaoConfirmado(_MENSAGEM)
 
 
+def consultar_status_autorizacao(clinic, operator_config, numero_guia_prestador,
+                                  numero_guia_operadora='', mock_scenario='em_analise'):
+    """BO-08.5 — mesmo bloqueio de D3: dialeto não confirmado, nunca tentado."""
+    raise ProviderNaoConfirmado(_MENSAGEM)
+
+
 def health_check(operator_config) -> ProviderHealth:
     """
     Não sonda nada: não sabemos sequer se este endpoint é SOAP. Devolver

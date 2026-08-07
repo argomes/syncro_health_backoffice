@@ -28,12 +28,13 @@ from ..models import TISSElegibilidadeOrigem, TISSElegibilidadeStatus, TISSGuia
 from ..orizon_autorize_client import (
     solicitar_autorizacao as orizon_solicitar_autorizacao,
     cancelar_guia as orizon_cancelar_guia,
+    consultar_status_autorizacao as orizon_consultar_status_autorizacao,
     OrizonAutorizeClientError, AutorizacaoResult, CancelamentoResult, SituacaoAutorizacao,
     SituacaoCancelamento,
 )
 from ..orizon_autorize_xml_builder import (
-    build_solicitacao_procedimento_xml, build_cancelamento_guia_xml, OrizonAutorizeXMLBuilderError,
-    get_tiss_padrao_versao_orizon,
+    build_solicitacao_procedimento_xml, build_cancelamento_guia_xml, build_status_autorizacao_xml,
+    OrizonAutorizeXMLBuilderError, get_tiss_padrao_versao_orizon,
 )
 from ..orizon_envio_documento_xml_builder import (
     build_envio_documento_fragment, OrizonEnvioDocumentoXMLBuilderError,
@@ -45,7 +46,7 @@ from ..soap_client import (
 from .base import (
     CancelamentoResultado, DocumentoAssinaturaFragmento, ElegibilidadeRespostaCompleta,
     EnvioDocumentoAssinadoResultado, EnvioLoteResultado, OperacaoNaoSuportada,
-    ProviderCapabilities, ProviderHealth,
+    ProviderCapabilities, ProviderHealth, StatusAutorizacaoResultado,
 )
 from .health import wsdl_health_check
 
@@ -127,10 +128,18 @@ def verificar_cobertura(clinic, operator_config, numero_carteira,
         # (solicitacaoStatusAutorizacao — ver capabilities().consulta_status).
         motivos_negativa = []
         erro_mensagem = ''
+        # BO-08.5: `EM_ANALISE` passa a ser um `status_operacional` PRÓPRIO
+        # (`TISSElegibilidadeStatus.EM_ANALISE`), não mais uma marcação
+        # informal dentro de `erro_mensagem` (`'orizon_autorizacao_em_analise'`
+        # — literal removido). `numero_guia_prestador` viaja no retorno
+        # justamente para permitir a consulta de status depois (ver
+        # `services._registrar_autorizacao_pendente`); a Orizon normalmente
+        # ainda não atribuiu `numeroGuiaOperadora` nesta resposta inicial.
+        status_operacional = TISSElegibilidadeStatus.SUCESSO
         if resultado.situacao == SituacaoAutorizacao.NEGADO:
             motivos_negativa = [{'codigo': resultado.codigo_glosa, 'descricao': resultado.descricao_glosa}]
         elif resultado.situacao == SituacaoAutorizacao.EM_ANALISE:
-            erro_mensagem = 'orizon_autorizacao_em_analise'
+            status_operacional = TISSElegibilidadeStatus.EM_ANALISE
         return ElegibilidadeRespostaCompleta(
             elegivel=(resultado.situacao == SituacaoAutorizacao.AUTORIZADO),
             numero_carteira=numero_carteira,
@@ -138,8 +147,9 @@ def verificar_cobertura(clinic, operator_config, numero_carteira,
             origem=TISSElegibilidadeOrigem.AUTOMATICA,
             motivos_negativa=motivos_negativa,
             numero_guia_operadora=resultado.numero_guia_operadora,
+            numero_guia_prestador=guia_transiente.numero,
             erro_mensagem=erro_mensagem,
-            status_operacional=TISSElegibilidadeStatus.SUCESSO,
+            status_operacional=status_operacional,
         )
 
     # SOAPFaultResult (módulo Orizon) — operadora rejeitou a PRÓPRIA
@@ -291,6 +301,63 @@ def cancelar_guia(clinic, operator_config, guia, mock_scenario='success') -> Can
     )
 
 
+def consultar_status_autorizacao(
+    clinic, operator_config, numero_guia_prestador: str, numero_guia_operadora: str = '',
+    mock_scenario: str = 'em_analise',
+) -> StatusAutorizacaoResultado:
+    """
+    BO-08.5 — Consulta o status de uma autorização anteriormente devolvida
+    como "Em Análise" (`tissSolicitacaoStatusAutorizacao_Operation`).
+    Chamado pela task periódica `tiss/tasks.py::consultar_autorizacoes_pendentes_task`
+    para cada `TISSAutorizacaoPendente` não resolvida. Nunca levanta exceção
+    de rede/transporte — mesmo padrão de `cancelar_guia`/`enviar_lote`: falha
+    vira `StatusAutorizacaoResultado(sucesso=False, erro_code=..., ...)` para
+    a task decidir (loga e tenta de novo no próximo ciclo, sem derrubar a
+    task nem as demais pendências do lote).
+    """
+    sequencial_transacao = datetime.now().strftime('%y%m%d%H%M%S')
+
+    try:
+        xml_consulta, _hash = build_status_autorizacao_xml(
+            numero_guia_prestador=numero_guia_prestador, numero_guia_operadora=numero_guia_operadora,
+            clinic=clinic, operator_config=operator_config, sequencial_transacao=sequencial_transacao,
+        )
+    except OrizonAutorizeXMLBuilderError as exc:
+        return StatusAutorizacaoResultado(
+            sucesso=False, erro_code='xml_builder_failed',
+            erro_mensagem=f'falha_montagem_xml_status_autorizacao_orizon: {exc}',
+        )
+
+    try:
+        resultado = orizon_consultar_status_autorizacao(
+            endpoint_url=operator_config.connection.endpoint_url,
+            xml_consulta=xml_consulta,
+            mock_scenario=mock_scenario,
+        )
+    except OrizonAutorizeClientError as exc:
+        return StatusAutorizacaoResultado(
+            sucesso=False, erro_code='soap_network_error', erro_mensagem=f'falha_soap_orizon: {exc}',
+        )
+
+    if isinstance(resultado, AutorizacaoResult):
+        return StatusAutorizacaoResultado(
+            sucesso=True,
+            situacao=resultado.situacao.value,
+            numero_guia_operadora=resultado.numero_guia_operadora,
+            codigo_glosa=resultado.codigo_glosa,
+            descricao_glosa=resultado.descricao_glosa,
+            raw_response=resultado.raw_response,
+        )
+
+    # SOAPFaultResult — operadora rejeitou a PRÓPRIA consulta de status (ex.:
+    # login inválido, guia não encontrada) — nível diferente de "ainda em
+    # análise", que é um AutorizacaoResult válido com situacao=EM_ANALISE.
+    return StatusAutorizacaoResultado(
+        sucesso=False, raw_response=resultado.raw_response, erro_code='soap_fault',
+        erro_mensagem=f'{resultado.codigo_erro}: {resultado.descricao_erro}',
+    )
+
+
 def health_check(operator_config) -> ProviderHealth:
     return wsdl_health_check(operator_config.connection.endpoint_url, 'orizon')
 
@@ -305,11 +372,13 @@ def capabilities() -> ProviderCapabilities:
         envio_lote=False,
         # TASK-BO-10: envioDocumentoWS assinado (XMLDSig) — implementado.
         envio_documento_assinado=True,
-        # O manual documenta solicitacaoStatusAutorizacao para o estado "Em
-        # Análise" (polling >= 30min). O client ainda não implementa a
-        # operação, então False: capability declara o que ESTE código faz,
-        # não o que a operadora oferece — senão a UI oferece botão que quebra.
-        consulta_status=False,
+        # BO-08.5: `consultar_status_autorizacao` implementado — a task
+        # periódica (`tiss/tasks.py`) já consulta `tissSolicitacaoStatus
+        # Autorizacao_Operation` para pendências "Em Análise". True aqui
+        # reflete o que o CÓDIGO faz; `confirmado_em_homologacao` abaixo
+        # segue False até validação real (mesma distinção já usada para as
+        # demais capabilities Orizon).
+        consulta_status=True,
         # BACFF-014 (2026-07-30): cancelar_guia implementado (cancelaGuiaWS,
         # schema confirmado contra o manual — ver providers/orizon.py). True
         # aqui reflete o que o CÓDIGO faz; `confirmado_em_homologacao`

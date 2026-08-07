@@ -321,3 +321,52 @@ def solicitar_autorizacao(endpoint_url: str, xml_solicitacao: str, mock_scenario
         raise OrizonAutorizeClientError('soap_network_error') from exc
 
     return _parse_response(resp.text)
+
+
+def consultar_status_autorizacao(endpoint_url: str, xml_consulta: str, mock_scenario: str = 'em_analise'):
+    """
+    BO-08.5 — Envia `solicitacaoStatusAutorizacaoWS` (Autorize Orizon) via
+    SOAP 1.1, consultando o status de uma autorização anteriormente
+    registrada como "Em Análise" por `solicitar_autorizacao`. Mesmo padrão
+    de transporte (envelope pronto vindo do builder, timeout, tratamento de
+    erro de rede).
+
+    A resposta (`ans:situacaoAutorizacaoWS`, confirmado contra
+    `tissSolicitacaoStatusAutorizacaoV4_02_00.wsdl`) reaproveita a MESMA
+    estrutura de `autorizacaoSP-SADT` (`situacaoAutorizacao`/
+    `numeroGuiaOperadora`/`codigoGlosa`/`descricaoGlosa`) já tratada por
+    `_parse_response` — a busca ali é `.//{*}autorizacaoSP-SADT` (qualquer
+    profundidade, independente do wrapper que embrulha), então nenhuma
+    duplicação de parser é necessária para o wrapper diferente.
+
+    Se TISS_SOAP_MOCK=true, intercepta e devolve resposta fixa
+    (mock_scenario='autorizado'|'negado'|'em_analise'|'fault') — reaproveita
+    os MESMOS mocks de `solicitar_autorizacao` (estrutura de resposta
+    idêntica, só o nome do wrapper raiz mudaria, e o parser ignora o nome do
+    wrapper). Retorna AutorizacaoResult ou SOAPFaultResult.
+    """
+    if _is_mock_enabled():
+        mock_responses = {
+            'autorizado': MOCK_AUTORIZADO_RESPONSE,
+            'negado': MOCK_NEGADO_RESPONSE,
+            'em_analise': MOCK_EM_ANALISE_RESPONSE,
+            'fault': MOCK_FAULT_RESPONSE,
+        }
+        raw = mock_responses.get(mock_scenario, MOCK_FAULT_RESPONSE)
+        logger.info(
+            'orizon_autorize_client: modo mock ativo (TISS_SOAP_MOCK=true), consulta de status cenário=%s',
+            mock_scenario,
+        )
+        return _parse_response(raw)
+
+    headers = {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': '""',
+    }
+    try:
+        resp = httpx.post(endpoint_url, content=xml_consulta.encode('utf-8'), headers=headers, timeout=DEFAULT_TIMEOUT)
+    except httpx.HTTPError as exc:
+        logger.error('orizon_autorize_client: falha de rede ao consultar status de autorização: %s', type(exc).__name__)
+        raise OrizonAutorizeClientError('soap_network_error') from exc
+
+    return _parse_response(resp.text)

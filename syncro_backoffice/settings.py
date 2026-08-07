@@ -561,6 +561,25 @@ if not DEBUG and 'CELERY_TASK_ALWAYS_EAGER' not in os.environ:
     )
 CELERY_TASK_ALWAYS_EAGER = env.bool('CELERY_TASK_ALWAYS_EAGER', default=DEBUG)
 
+# BO-08.5 (2026-08-06) — primeira entrada de CELERY_BEAT_SCHEDULE no
+# projeto. Antes, todo job periódico usava management command + cron externo
+# (`purgar_operator_call_log`, `purge_old_backups`) porque não havia Beat
+# configurado; essa decisão de infra mudou nesta sessão. Jobs periódicos
+# novos entram AQUI (Celery Beat), não como management command + cron.
+#
+# `tiss.consultar_autorizacoes_pendentes` — varre `TISSAutorizacaoPendente`
+# não resolvidas e consulta o status junto à operadora
+# (`tiss/tasks.py::consultar_autorizacoes_pendentes_task`). Intervalo de
+# 10min (mais espaçado que qualquer job de mensageria tipo WhatsApp): não há
+# SLA de resposta em tempo real aqui — a própria Orizon já avisa, no manual,
+# que autorizações "Em Análise" levam >= 30min para resolver.
+CELERY_BEAT_SCHEDULE = {
+    'tiss.consultar_autorizacoes_pendentes': {
+        'task': 'tiss.tasks.consultar_autorizacoes_pendentes_task',
+        'schedule': 600.0,  # 10 minutos, em segundos
+    },
+}
+
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 

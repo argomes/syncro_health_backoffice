@@ -260,6 +260,115 @@ def _cancela_guia_cabecalho_xml(operator_config, sequencial_transacao: str) -> s
     )
 
 
+def _status_autorizacao_cabecalho_xml(operator_config, sequencial_transacao: str) -> str:
+    """
+    <ans:cabecalho> da operação SOLICITACAO_STATUS_AUTORIZACAO (BO-08.5).
+
+    NÃO confirmado contra exemplo oficial de request (o Cap. 10 do manual
+    documenta o fluxograma da operação — solicitacaoProcedimento ->
+    autorizacaoProcedimento; se "Em Análise" -> solicitacaoStatusAutorizacao
+    -> situacaoAutorizacao — não o XML de request). Estrutura assumida por
+    analogia com `_cabecalho_xml` (SOLICITACAO_PROCEDIMENTOS): mantém
+    `loginSenhaPrestador` porque é uma operação autenticada como as demais do
+    Autorize (diferente de CANCELA_GUIA, cujo exemplo oficial confirmou a
+    ausência do bloco). Revisar contra homologação real assim que houver
+    credenciais (mesmo bloqueio já registrado em BACFF-014).
+    """
+    now = datetime.now()
+    data_registro = now.strftime('%Y-%m-%d')
+    hora_registro = now.strftime('%H:%M:%S')
+    registro_ans = _esc(operator_config.registro_ans)
+
+    login_plain = operator_config.connection.login_plain
+    senha_plain = operator_config.connection.senha_plain
+    if not login_plain or not senha_plain:
+        raise OrizonAutorizeXMLBuilderError('operator_config_sem_login_senha')
+
+    login = _esc(login_plain)
+    senha_hash = _esc(_senha_md5(senha_plain))
+
+    return (
+        '<ans:cabecalho>'
+        '<ans:identificacaoTransacao>'
+        '<ans:tipoTransacao>SOLICITACAO_STATUS_AUTORIZACAO</ans:tipoTransacao>'
+        f'<ans:sequencialTransacao>{_esc(sequencial_transacao)}</ans:sequencialTransacao>'
+        f'<ans:dataRegistroTransacao>{data_registro}</ans:dataRegistroTransacao>'
+        f'<ans:horaRegistroTransacao>{hora_registro}</ans:horaRegistroTransacao>'
+        '</ans:identificacaoTransacao>'
+        '<ans:origem><ans:identificacaoPrestador>'
+        '<ans:codigoPrestadorNaOperadora>0</ans:codigoPrestadorNaOperadora>'
+        '</ans:identificacaoPrestador></ans:origem>'
+        f'<ans:destino><ans:registroANS>{registro_ans}</ans:registroANS></ans:destino>'
+        f'<ans:Padrao>{_esc(get_tiss_padrao_versao_orizon())}</ans:Padrao>'
+        '<ans:loginSenhaPrestador>'
+        f'<ans:loginPrestador>{login}</ans:loginPrestador>'
+        f'<ans:senhaPrestador>{senha_hash}</ans:senhaPrestador>'
+        '</ans:loginSenhaPrestador>'
+        '</ans:cabecalho>'
+    )
+
+
+def build_status_autorizacao_xml(
+    numero_guia_prestador: str, numero_guia_operadora: str,
+    clinic, operator_config, sequencial_transacao: str,
+) -> tuple[str, str]:
+    """
+    BO-08.5 — Monta o envelope SOAP completo de `solicitacaoStatusAutorizacaoWS`
+    (Autorize Orizon), usado para consultar o status de uma autorização
+    devolvida anteriormente como "Em Análise" (`situacaoAutorizacao=2`, ver
+    `orizon_autorize_client.py::SituacaoAutorizacao.EM_ANALISE`).
+
+    Wrapper/operação confirmados contra
+    `tissSolicitacaoStatusAutorizacaoV4_02_00.wsdl` (mensagem de request:
+    `ans:solicitacaoStatusAutorizacaoWS`; resposta: `ans:situacaoAutorizacaoWS`
+    — tratada em `orizon_autorize_client._parse_response`, que reaproveita a
+    mesma estrutura de `autorizacaoSP-SADT` já usada por
+    `autorizacaoProcedimentoWS`). O CORPO interno (quais campos identificam a
+    guia a consultar) não está documentado no manual disponível — assumido
+    por analogia com `build_cancelamento_guia_xml` (par
+    numeroGuiaPrestador/numeroGuiaOperadora, mesmo par que a operação de
+    cancelamento usa para identificar a guia). Revisar contra homologação
+    real assim que houver credenciais (mesmo bloqueio já registrado em
+    BACFF-014 para as demais operações do Autorize).
+
+    `numero_guia_operadora` é opcional (pode ainda não ter sido atribuído
+    pela operadora na resposta "Em Análise" original) — omitido do XML
+    quando vazio, nunca enviado como tag vazia.
+
+    Retorna (xml, hash_md5).
+    """
+    if not numero_guia_prestador:
+        raise OrizonAutorizeXMLBuilderError('numero_guia_prestador_obrigatorio')
+
+    cabecalho_xml = _status_autorizacao_cabecalho_xml(operator_config, sequencial_transacao)
+    numero_guia_prestador_esc = _esc(numero_guia_prestador)
+    numero_guia_operadora_xml = (
+        f'<ans:numeroGuiaOperadora>{_esc(numero_guia_operadora)}</ans:numeroGuiaOperadora>'
+        if numero_guia_operadora else ''
+    )
+
+    corpo_sem_hash = (
+        f'<ans:solicitacaoStatusAutorizacaoWS xmlns:ans="{SCH_NAMESPACE}">'
+        f'{cabecalho_xml}'
+        '<ans:solicitacaoStatusAutorizacao>'
+        f'<ans:numeroGuiaPrestador>{numero_guia_prestador_esc}</ans:numeroGuiaPrestador>'
+        f'{numero_guia_operadora_xml}'
+        '</ans:solicitacaoStatusAutorizacao>'
+    )
+
+    # Mesma regra de hash já aplicada nas demais operações do Autorize (ver
+    # nota em `build_cancelamento_guia_xml`).
+    hash_md5 = hashlib.md5(corpo_sem_hash.encode('utf-8')).hexdigest()
+
+    xml_completo = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'{corpo_sem_hash}'
+        f'<ans:hash>{hash_md5}</ans:hash>'
+        '</ans:solicitacaoStatusAutorizacaoWS>'
+    )
+    return xml_completo, hash_md5
+
+
 def build_cancelamento_guia_xml(guia, clinic, operator_config, sequencial_transacao: str) -> tuple[str, str]:
     """
     Monta o envelope SOAP completo de `cancelaGuiaWS` (Autorize Orizon) para

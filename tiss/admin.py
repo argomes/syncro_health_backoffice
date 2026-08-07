@@ -8,7 +8,7 @@ from . import providers
 from .models import (
     TISSOperatorConfig, TISSOperatorConnection, TISSLote, TISSGuia, TISSGlosa,
     TISSElegibilidadeConsulta, TUSSProcedureCode, ANSInsuranceOperator, OperatorCallLog,
-    TISSDocumentoAssinatura, TISSCancelamentoPendente, mascarar_numero_carteira,
+    TISSDocumentoAssinatura, TISSCancelamentoPendente, TISSAutorizacaoPendente, mascarar_numero_carteira,
 )
 from .services import enviar_lote, TISSServiceError
 
@@ -247,6 +247,30 @@ class TISSCancelamentoPendenteAdmin(TenantScopedAdminMixin, BaseAdmin):
         if obj and obj.resolvido:
             return mark_safe('<span style="color: green;">Resolvido</span>')
         return '—'
+
+
+@admin.register(TISSAutorizacaoPendente)
+class TISSAutorizacaoPendenteAdmin(TenantScopedAdminMixin, BaseAdmin):
+    """
+    BO-08.5 — fila de autorizações "Em Análise" acompanhadas automaticamente
+    pela task periódica `tiss/tasks.py::consultar_autorizacoes_pendentes_task`.
+    Somente leitura (`resolvido`/`situacao` mudam só pela task, nunca por
+    edição manual — mesmo espírito de `TISSElegibilidadeConsultaAdmin`, mas
+    mantém `has_add_permission`/`has_change_permission` abertos apenas para
+    inspeção via `readonly_fields`, já que aqui o suporte pode querer
+    consultar `ultimo_erro_consulta`/`tentativas_consulta` para diagnosticar
+    uma pendência presa).
+    """
+    list_display = ('numero_guia_prestador', 'clinic', 'situacao', 'tentativas_consulta', 'resolvido', 'ultima_consulta_em', 'created_at')
+    list_filter = ('situacao', 'resolvido', 'clinic')
+    search_fields = ('numero_guia_prestador', 'numero_guia_operadora', 'appointment_id', 'clinic__name')
+    readonly_fields = [f.name for f in TISSAutorizacaoPendente._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(TISSGlosa)

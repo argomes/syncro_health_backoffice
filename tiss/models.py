@@ -506,6 +506,13 @@ class TISSElegibilidadeStatus(models.TextChoices):
     SUCESSO = 'sucesso', 'Sucesso (resposta recebida da operadora)'
     FALHA_TRANSPORTE = 'falha_transporte', 'Falha de transporte (SOAP)'
     FALHA_OPERADORA = 'falha_operadora', 'Operadora rejeitou a própria consulta'
+    # BO-08.5: autorização recebida como "Em Análise" (Orizon Autorize,
+    # situacaoAutorizacao=2) — não é falha nenhuma, é um estado transitório
+    # legítimo que só a consulta de status assíncrona resolve depois (ver
+    # `TISSAutorizacaoPendente`). Distinto de SUCESSO para que `services`
+    # possa decidir, de forma genérica (sem `if operadora == 'orizon'`),
+    # quando vale a pena registrar uma pendência de acompanhamento.
+    EM_ANALISE = 'em_analise', 'Em análise (aguardando confirmação da operadora)'
 
 
 class TISSElegibilidadeConsulta(models.Model):
@@ -555,10 +562,98 @@ class TISSElegibilidadeConsulta(models.Model):
         return f'Elegibilidade — {self.clinic.name} ({self.origem}, {self.status})'
 
 
+class TISSAutorizacaoSituacao(models.TextChoices):
+    """
+    Mesmo vocabulário de `orizon_autorize_client.SituacaoAutorizacao` (os
+    valores são iguais de propósito — evita mapeamento redundante entre o
+    client e este model). `EM_ANALISE` é o estado inicial/transitório;
+    `AUTORIZADO`/`NEGADO` são terminais.
+    """
+    EM_ANALISE = 'em_analise', 'Em análise (aguardando operadora)'
+    AUTORIZADO = 'autorizado', 'Autorizado'
+    NEGADO = 'negado', 'Negado'
+
+
+class TISSAutorizacaoPendente(models.Model):
+    """
+    BO-08.5 — fila de acompanhamento de autorizações que a operadora
+    respondeu como "Em Análise" (`solicitacaoProcedimentoWS` ->
+    `situacaoAutorizacao=2`, ver `providers/orizon.py::verificar_cobertura`).
+
+    Diferente de `TISSElegibilidadeConsulta` (log append-only, nunca lido de
+    volta pelo próprio sistema): este é um registro de TRABALHO, mutável,
+    que a task periódica `tiss/tasks.py::consultar_autorizacoes_pendentes_task`
+    consulta e atualiza até a operadora responder em definitivo
+    (`tissSolicitacaoStatusAutorizacao_Operation`). Só entra aqui quando o
+    provider consegue identificar `numero_guia_prestador` (ver
+    `services._registrar_autorizacao_pendente` — sem esse identificador não
+    há como consultar o status depois, então a pendência não é registrada e
+    fica só no log operacional).
+
+    LGPD: mesmos limites de `OperatorCallLog`/`TISSCancelamentoPendente` —
+    nenhum nome de beneficiário, nenhuma carteirinha, nenhum XML. Só
+    identificadores de guia (não-PII por si só) e metadado de negócio.
+    `descricao_glosa`/`ultimo_erro_consulta` passam por
+    `sanitizar_erro_operadora` antes de persistir (mesmo texto livre vindo
+    da operadora que motivou o tratamento em `TISSCancelamentoPendente`).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    clinic = models.ForeignKey(Clinic, on_delete=models.PROTECT, related_name='tiss_autorizacoes_pendentes')
+    operator_config = models.ForeignKey(
+        TISSOperatorConfig, on_delete=models.PROTECT, related_name='autorizacoes_pendentes',
+    )
+    appointment_id = models.CharField(
+        max_length=64, blank=True,
+        help_text='ID do agendamento no Edge Gateway (não é FK) — referência opaca, pode estar vazio para consultas avulsas',
+    )
+    numero_guia_prestador = models.CharField(
+        max_length=20, help_text='numeroGuiaPrestador — chave usada para consultar o status depois',
+    )
+    numero_guia_operadora = models.CharField(max_length=20, blank=True)
+
+    situacao = models.CharField(
+        max_length=20, choices=TISSAutorizacaoSituacao, default=TISSAutorizacaoSituacao.EM_ANALISE,
+    )
+    codigo_glosa = models.CharField(max_length=10, blank=True)
+    descricao_glosa = models.CharField(max_length=500, blank=True)
+
+    tentativas_consulta = models.PositiveIntegerField(default=0)
+    ultima_consulta_em = models.DateTimeField(null=True, blank=True)
+    ultimo_erro_consulta = models.TextField(blank=True)
+
+    # Terminal (AUTORIZADO/NEGADO): a task periódica para de consultar. Campo
+    # próprio (em vez de derivar de `situacao != EM_ANALISE`) porque é o que
+    # a query da task filtra (`resolvido=False`) — filtrar por exclusão de
+    # enum acopla a query à lista de estados não-terminais, que cresce mais
+    # fácil de errar do que este booleano explícito.
+    resolvido = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Autorização TISS Pendente'
+        verbose_name_plural = 'Autorizações TISS Pendentes'
+        ordering = ['-created_at']
+        # Idempotência (requisito BO-08.5): a mesma guia "em análise" nunca
+        # gera duas linhas de pendência, mesmo se `services.consultar_
+        # elegibilidade_automatica` for chamado de novo antes da operadora
+        # responder (retry do gateway, nova tentativa do usuário etc.).
+        unique_together = [('clinic', 'operator_config', 'numero_guia_prestador')]
+        indexes = [
+            models.Index(fields=['resolvido']),
+            models.Index(fields=['clinic', 'situacao']),
+        ]
+
+    def __str__(self):
+        return f'Autorização pendente {self.numero_guia_prestador} — {self.clinic.name} ({self.situacao})'
+
+
 class OperatorCallOperation(models.TextChoices):
     COBERTURA = 'cobertura', 'Cobertura (elegibilidade/autorização)'
     ENVIO_LOTE = 'envio_lote', 'Envio de lote'
     CANCELAMENTO = 'cancelamento', 'Cancelamento de guia'
+    CONSULTA_STATUS = 'consulta_status', 'Consulta de status de autorização'
 
 
 class OperatorCallOutcome(models.TextChoices):
