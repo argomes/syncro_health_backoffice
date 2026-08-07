@@ -134,7 +134,7 @@ class PortalReadAuditLog(models.Model):
     )
     entity = models.CharField(
         max_length=32,
-        help_text="Entidade acessada: 'patients', 'appointments' ou 'professionals'.",
+        help_text="Entidade acessada: 'patients', 'appointments', 'professionals' ou 'medical_records'.",
     )
     record_count = models.PositiveIntegerField(
         help_text='Quantidade de registros retornados pela leitura — pode ser 0.',

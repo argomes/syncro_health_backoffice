@@ -107,6 +107,23 @@ _PROFESSIONAL_QUERY = """
 """
 
 
+# TASK-BO-19: `medical_records` só chega ao Postgres da clínica como metadado
+# de referência/listagem — id, appointment_id, patient_id, professional_id,
+# finalized, version — pushado pelo gateway via MedicalRecordSyncStrategy
+# (syncro_gateway/internal/adapters/output/cloud/medical_record_strategy.go,
+# EDGW-078). O conteúdo clínico (queixa/evolução/CID/conduta, o SOAP) NUNCA
+# sai do SQLite local da clínica — a tabela remota nem tem essas colunas
+# (ver migration 006_medical_records_metadata.sql do gateway), então não há
+# como este módulo vazar PHI clínico mesmo por engano: o SELECT abaixo só
+# pode referenciar o que existe na tabela.
+_MEDICAL_RECORD_QUERY = """
+    SELECT id, appointment_id, patient_id, professional_id, finalized, version, updated_at
+    FROM medical_records
+    WHERE updated_at BETWEEN %s AND %s
+      AND deleted_at IS NULL
+"""
+
+
 def _run_query(clinic, query, params):
     try:
         with clinic_db_connection(clinic) as conn:
@@ -211,6 +228,34 @@ def read_professionals_report(clinic, session) -> list[dict]:
             'status': prof_status,
             'metadata': metadata,
             'cbo_code': cbo_code,
+            'updated_at': updated_at.isoformat() if updated_at else None,
+        })
+    return results
+
+
+def read_medical_records_report(clinic, session) -> list[dict]:
+    """
+    TASK-BO-19 — listagem de metadados de prontuário (id/appointment/paciente/
+    profissional/finalizado) por clínica. Mesmo gate de autorização das demais
+    entidades (sessão precisa estar no escopo, não expirada, com a
+    TemporaryKey ainda no cache) — igual a `read_professionals_report`, sem
+    uso de DEK porque não há campo cifrado nesta tabela (ela nunca teve PHI
+    clínico pra proteger em primeiro lugar).
+    """
+    _require_entity_in_scope(session, 'medical_records')
+    _get_temp_key_or_403(session)  # só o gate de autorização — sem DEK abaixo.
+
+    rows = _run_query(clinic, _MEDICAL_RECORD_QUERY, (session.date_from, session.date_to))
+
+    results = []
+    for (record_id, appointment_id, patient_id, professional_id, finalized, version, updated_at) in rows:
+        results.append({
+            'id': str(record_id),
+            'appointment_id': str(appointment_id),
+            'patient_id': str(patient_id),
+            'professional_id': str(professional_id),
+            'finalized': finalized,
+            'version': version,
             'updated_at': updated_at.isoformat() if updated_at else None,
         })
     return results
