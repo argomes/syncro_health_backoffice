@@ -2,7 +2,7 @@ anyio==4.14.1
 asgiref==3.11.1
 certifi==2026.6.17
 cffi==2.0.0
-cryptography==49.0.0
+cryptography==50.0.0
 datetime-truncate==1.1.1
 Django==6.0.7
 django-admin-charts==1.6.0
