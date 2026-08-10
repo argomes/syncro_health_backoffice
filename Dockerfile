@@ -53,7 +53,7 @@ EXPOSE 8000
 # HEALTHCHECK aqui é best-effort para VPS puro (docker run sem orquestrador);
 # Railway/compose sobrescrevem com sua própria configuração de healthcheck.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:8000/health/ || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health/ || exit 1
 
 ENTRYPOINT ["docker/entrypoint.sh"]
 CMD ["gunicorn", "syncro_backoffice.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "30"]
