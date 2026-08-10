@@ -24,6 +24,14 @@ startCommand = "gunicorn syncro_backoffice.wsgi:application --bind 0.0.0.0:8000 
 # healthcheck que só confirma o processo em pé mascararia banco fora do ar
 # como deploy saudável.
 healthcheckPath = "/health/ready/"
-healthcheckTimeout = 10
+# 2026-08-10: 10s era curto demais — o entrypoint roda `migrate` +
+# `collectstatic` (CompressedManifestStaticFilesStorage do whitenoise, que
+# recomprime/hasheia cada arquivo estático) antes do gunicorn sequer abrir a
+# porta, TODA vez que o container sobe, não só no primeiro boot. Deploy
+# encontrado com "1/1 replicas never became healthy!" e nenhum log de
+# aplicação sequer chegou a ser emitido — sintoma de timeout batendo antes
+# do entrypoint terminar, não de erro na aplicação em si. 120s dá margem
+# real para migrate+collectstatic+boot do gunicorn mesmo num cold start.
+healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
