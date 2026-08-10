@@ -27,11 +27,15 @@ healthcheckPath = "/health/ready/"
 # 2026-08-10: 10s era curto demais — o entrypoint roda `migrate` +
 # `collectstatic` (CompressedManifestStaticFilesStorage do whitenoise, que
 # recomprime/hasheia cada arquivo estático) antes do gunicorn sequer abrir a
-# porta, TODA vez que o container sobe, não só no primeiro boot. Deploy
-# encontrado com "1/1 replicas never became healthy!" e nenhum log de
-# aplicação sequer chegou a ser emitido — sintoma de timeout batendo antes
-# do entrypoint terminar, não de erro na aplicação em si. 120s dá margem
-# real para migrate+collectstatic+boot do gunicorn mesmo num cold start.
-healthcheckTimeout = 120
+# porta, TODA vez que o container sobe, não só no primeiro boot. 120s ainda
+# não foi suficiente num ambiente/banco recém-recriado (migrate do zero,
+# incluindo o seed de ~6000 códigos TUSS em tiss.0005_seed_tuss22_completo —
+# bulk_create pesado que só corre por completo quando a migration ainda não
+# tinha sido aplicada nesse banco). Reproduzido localmente via Docker com as
+# credenciais reais (proxy público do Postgres/Redis do Railway): boot
+# completo passou de 120s. 300s dá margem real para esse pior caso (cold
+# start total) sem atrasar deploys normais (que só reaplicam migrations
+# pendentes, rápido).
+healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
