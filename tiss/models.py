@@ -721,7 +721,11 @@ class TUSSProcedureCode(models.Model):
     dado de clínica — sem FK a Clinic.
     """
     tuss_code = models.CharField(max_length=10, primary_key=True)
-    description = models.CharField(max_length=255)
+    # 500, não 255: a tabela oficial TUSS 22 da ANS tem descrições de até
+    # 302 caracteres (achado real ao rodar migrate contra Postgres real pela
+    # primeira vez, 2026-08-10 — 255 quebrava o seed com DataError em 5
+    # códigos). Ver migration 0005_seed_tuss22_completo.
+    description = models.CharField(max_length=500)
     table_code = models.CharField(max_length=2, default='22', help_text="'22'=médico, '90'=odontológico")
     updated_at = models.DateTimeField(auto_now=True, help_text='Usado pelo gateway para invalidar cache local quando a ANS atualizar este registro')
 

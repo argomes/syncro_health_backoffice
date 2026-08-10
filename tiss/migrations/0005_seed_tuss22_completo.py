@@ -1,7 +1,7 @@
 import csv
 from pathlib import Path
 
-from django.db import migrations
+from django.db import migrations, models
 
 # Fonte: TUSS 22 - PROCEDIMENTOS E EVENTOS EM SAÚDE - VERSÃO 202601 (ANS,
 # oficial). Exportado uma única vez para CSV em tiss/data/ — ver
@@ -54,5 +54,18 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # 2026-08-10: descoberto rodando migrate contra Postgres real pela
+        # primeira vez (ambiente Railway recriado) — 5 códigos da tabela
+        # oficial TUSS 22 da ANS têm descrição maior que 255 chars (máximo
+        # real: 302), quebrando o bulk_create com
+        # "DataError: value too long for type character varying(255)".
+        # Alterar a coluna ANTES do seed rodar, na mesma migration (nunca
+        # tinha completado com sucesso em nenhum ambiente até aqui — seguro
+        # editar em vez de adicionar uma migration nova).
+        migrations.AlterField(
+            model_name='tussprocedurecode',
+            name='description',
+            field=models.CharField(max_length=500),
+        ),
         migrations.RunPython(seed, unseed),
     ]
