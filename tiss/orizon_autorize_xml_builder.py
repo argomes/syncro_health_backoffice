@@ -7,11 +7,25 @@ Fonte de verdade: `Autorize-Integracao-Tecnica-Webservice-TISS-4-01-00.pdf`
 (manual técnico OFICIAL da Orizon, material público, capítulos 1-13 lidos
 por completo em 2026-07-17), não o WSDL genérico da ANS.
 
+CORREÇÃO 2026-08-10 — confirmado contra `20260515_Autorize Integração
+Tecnica Webservice - TISS 4.03.00.pdf` (manual mais novo, mesma fonte
+oficial, capítulos 10 e 12 lidos por completo): TODAS as mensagens do
+Autorize (solicitação, cancelamento, status) são enviadas dentro de um
+`<soapenv:Envelope><soapenv:Header/><soapenv:Body>...</soapenv:Body>
+</soapenv:Envelope>` real — confirmado em 7 exemplos de XML no Cap. 10 e no
+screenshot literal de uma chamada real via SoapUI no Cap. 12. A suposição
+anterior ("SEM envelope", baseada no manual 4.01.00) nunca foi testada
+contra sandbox real (BACFF-014, bloqueado até clínica-piloto credenciada) e
+estava incorreta — corrigida agora que há confirmação oficial explícita.
+Ver `_wrap_soap_envelope` abaixo, aplicada nas 3 funções `build_*_xml`.
+
 Diferenças estruturais confirmadas contra o manual (ver BACFF-014 em
 `.claude/tasks/BACKOFFICE-TASKS-AVULSAS.md` do repo SyncroHealth):
 - Wrapper da operação termina em "WS" (solicitacaoProcedimentoWS), não
   mensagemTISS — cabecalho/solicitacaoProcedimento/hash são filhos diretos
-  desse wrapper, SEM o envelope <mensagemTISS>/<epilogo> do padrão ANS.
+  desse wrapper, SEM o `<epilogo>` do padrão ANS (mas COM `soapenv:Envelope`
+  por fora, ver correção acima — só o wrapper interno é diferente do Fature,
+  não o transporte SOAP).
 - Autenticação obrigatória dentro do <cabecalho>: <loginSenhaPrestador>
   com <loginPrestador> e <senhaPrestador> (senha em hash MD5) — OU
   certificado digital (não implementado aqui; ver EDGW-041, certificado é
@@ -41,6 +55,26 @@ from xml.sax.saxutils import escape
 from django.conf import settings
 
 SCH_NAMESPACE = 'http://www.ans.gov.br/padroes/tiss/schemas'
+
+
+def _wrap_soap_envelope(ws_body: str) -> str:
+    """
+    Envelopa o corpo (wrapper "WS" completo, ex. <sch:solicitacaoProcedimentoWS>...
+    </sch:solicitacaoProcedimentoWS>) num soap:Envelope real — confirmado
+    contra os 7 exemplos de XML do Cap. 10 do manual Autorize 4.03.00 (ver
+    correção 2026-08-10 no docstring do módulo). Namespaces (soapenv/sch/xd)
+    copiados literalmente dos exemplos oficiais.
+    """
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" '
+        f'xmlns:sch="{SCH_NAMESPACE}" xmlns:xd="http://www.w3.org/2000/09/xmldsig#">'
+        '<soapenv:Header/>'
+        '<soapenv:Body>'
+        f'{ws_body}'
+        '</soapenv:Body>'
+        '</soapenv:Envelope>'
+    )
 
 
 def get_tiss_padrao_versao_orizon() -> str:
@@ -360,12 +394,12 @@ def build_status_autorizacao_xml(
     # nota em `build_cancelamento_guia_xml`).
     hash_md5 = hashlib.md5(corpo_sem_hash.encode('utf-8')).hexdigest()
 
-    xml_completo = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
+    ws_body = (
         f'{corpo_sem_hash}'
         f'<ans:hash>{hash_md5}</ans:hash>'
         '</ans:solicitacaoStatusAutorizacaoWS>'
     )
+    xml_completo = _wrap_soap_envelope(ws_body)
     return xml_completo, hash_md5
 
 
@@ -423,12 +457,12 @@ def build_cancelamento_guia_xml(guia, clinic, operator_config, sequencial_transa
     # placeholder no exemplo).
     hash_md5 = hashlib.md5(corpo_sem_hash.encode('utf-8')).hexdigest()
 
-    xml_completo = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
+    ws_body = (
         f'{corpo_sem_hash}'
         f'<ans:hash>{hash_md5}</ans:hash>'
         '</ans:cancelaGuiaWS>'
     )
+    xml_completo = _wrap_soap_envelope(ws_body)
     return xml_completo, hash_md5
 
 
@@ -461,10 +495,10 @@ def build_solicitacao_procedimento_xml(guia, clinic, operator_config, sequencial
     # revisar se a Orizon rejeitar por hash incorreto em homologação real).
     hash_md5 = hashlib.md5(corpo_sem_hash.encode('utf-8')).hexdigest()
 
-    xml_completo = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
+    ws_body = (
         f'{corpo_sem_hash}'
         f'<sch:hash>{hash_md5}</sch:hash>'
         '</sch:solicitacaoProcedimentoWS>'
     )
+    xml_completo = _wrap_soap_envelope(ws_body)
     return xml_completo, hash_md5

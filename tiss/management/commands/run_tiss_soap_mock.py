@@ -29,6 +29,7 @@ requisição reconhecível como consulta de elegibilidade e devolve a resposta
 canônica de sucesso. Estender quando a camada de persistência/endpoint de
 elegibilidade for construída.
 """
+import os
 from wsgiref.simple_server import make_server
 
 from django.core.management.base import BaseCommand
@@ -87,6 +88,17 @@ def _handle_request(body: bytes) -> bytes:
 
 
 def _wsgi_app(environ, start_response):
+    # GET/HEAD em '/' respondem 200 sem tocar em XML — só para healthcheck
+    # (Railway ou curl manual). O protocolo SOAP real continua exigindo POST;
+    # isso nunca é confundido com uma operação TISS válida.
+    if environ.get('REQUEST_METHOD') in ('GET', 'HEAD') and environ.get('PATH_INFO', '/') == '/':
+        body = b'ok' if environ.get('REQUEST_METHOD') == 'GET' else b''
+        start_response('200 OK', [
+            ('Content-Type', 'text/plain; charset=utf-8'),
+            ('Content-Length', str(len(body))),
+        ])
+        return [body]
+
     if environ.get('REQUEST_METHOD') != 'POST':
         start_response('405 Method Not Allowed', [('Content-Type', 'text/plain')])
         return [b'apenas POST']
@@ -106,8 +118,19 @@ class Command(BaseCommand):
     help = 'Sobe um mock HTTP do endpoint SOAP da operadora TISS para testes E2E/CI (round-trip HTTP real, não in-process).'
 
     def add_arguments(self, parser):
-        parser.add_argument('--port', type=int, default=9999)
-        parser.add_argument('--host', type=str, default='127.0.0.1')
+        # Defaults pensados para funcionar tanto local (127.0.0.1:9999, como
+        # sempre foi) quanto em uma plataforma tipo Railway, que injeta $PORT
+        # e exige bind em 0.0.0.0 — sem precisar de dois comandos diferentes.
+        # Setar RUN_TISS_SOAP_MOCK_HOST=0.0.0.0 no ambiente também funciona,
+        # útil quando o start command não pode ser editado com flags.
+        parser.add_argument(
+            '--port', type=int,
+            default=int(os.environ.get('PORT', 9999)),
+        )
+        parser.add_argument(
+            '--host', type=str,
+            default=os.environ.get('RUN_TISS_SOAP_MOCK_HOST', '127.0.0.1'),
+        )
 
     def handle(self, *args, **options):
         host, port = options['host'], options['port']

@@ -46,6 +46,13 @@ class OrizonAutorizeXMLBuilderTests(TestCase):
         self.assertNotIn('<epilogo>', xml)
         self.assertIn(f'<sch:hash>{hash_md5}</sch:hash>', xml)
         self.assertTrue(xml.startswith('<?xml version="1.0" encoding="UTF-8"?>'))
+        # Correção 2026-08-10: confirmado contra os 7 exemplos do manual
+        # 4.03.00 (Cap. 10) que o wrapper "WS" fica DENTRO de um
+        # soapenv:Envelope real — só o mensagemTISS/epilogo do Fature é que
+        # não existe aqui, não o transporte SOAP inteiro.
+        self.assertIn('<soapenv:Envelope', xml)
+        self.assertIn('<soapenv:Body>', xml)
+        self.assertIn('</soapenv:Body></soapenv:Envelope>', xml)
 
     def test_versao_do_padrao_default_e_4_03_00_nao_hardcoded_em_4_01_00(self):
         # BACFF-014 (achado 1, atualização 2026-07-29): versão não pode mais
@@ -91,11 +98,12 @@ class OrizonAutorizeXMLBuilderTests(TestCase):
 
     def test_hash_nao_inclui_a_si_mesmo(self):
         xml, hash_md5 = build_solicitacao_procedimento_xml(self.guia, self.clinic, self.op, '1')
-        # Hash é calculado sobre o corpo SEM a declaração <?xml ...?> (só
-        # prependida depois, ao montar xml_completo) — mesma regra de
+        # Hash é calculado sobre o corpo do wrapper "WS" (dentro de
+        # soapenv:Body), SEM a declaração <?xml ...?> nem o soap:Envelope
+        # por fora (só adicionados depois, ao montar xml_completo — ver
+        # correção 2026-08-10, _wrap_soap_envelope) — mesma regra de
         # xml_builder.py/build_lote_xml, replicada aqui por consistência.
-        declaracao = '<?xml version="1.0" encoding="UTF-8"?>'
-        corpo_sem_hash = xml[len(declaracao):].split('<sch:hash>')[0]
+        corpo_sem_hash = xml.split('<soapenv:Body>')[1].split('<sch:hash>')[0]
         import hashlib
         self.assertEqual(hashlib.md5(corpo_sem_hash.encode('utf-8')).hexdigest(), hash_md5)
 
@@ -184,6 +192,9 @@ class OrizonCancelamentoGuiaXMLBuilderTests(TestCase):
         self.assertNotIn('mensagemTISS', xml)
         self.assertNotIn('<epilogo>', xml)
         self.assertIn(f'<ans:hash>{hash_md5}</ans:hash>', xml)
+        # Correção 2026-08-10 (ver teste equivalente acima).
+        self.assertIn('<soapenv:Envelope', xml)
+        self.assertIn('<soapenv:Body>', xml)
         self.assertTrue(xml.startswith('<?xml version="1.0" encoding="UTF-8"?>'))
 
     def test_cabecalho_cancelamento_nao_inclui_login_senha(self):
@@ -206,6 +217,7 @@ class OrizonCancelamentoGuiaXMLBuilderTests(TestCase):
     def test_hash_nao_inclui_a_si_mesmo(self):
         import hashlib
         xml, hash_md5 = build_cancelamento_guia_xml(self.guia, self.clinic, self.op, '2')
-        declaracao = '<?xml version="1.0" encoding="UTF-8"?>'
-        corpo_sem_hash = xml[len(declaracao):].split('<ans:hash>')[0]
+        # Ver comentário equivalente em OrizonAutorizeXMLBuilderTests acima
+        # (correção 2026-08-10, _wrap_soap_envelope).
+        corpo_sem_hash = xml.split('<soapenv:Body>')[1].split('<ans:hash>')[0]
         self.assertEqual(hashlib.md5(corpo_sem_hash.encode('utf-8')).hexdigest(), hash_md5)

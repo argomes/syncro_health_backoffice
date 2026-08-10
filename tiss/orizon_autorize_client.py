@@ -132,13 +132,28 @@ MOCK_EM_ANALISE_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
   </soap:Body>
 </soap:Envelope>"""
 
+# CORREÇÃO 2026-08-10: estrutura anterior (codigoErro/descricaoErro dentro
+# de tissFaultWS) nunca existiu no Autorize real — confirmado contra os 7
+# exemplos de fault do Cap. 11 do manual 4.03.00. A estrutura real é um
+# soap:Fault padrão (faultcode/faultstring) com <detail><tissFaultWS>
+# contendo um ÚNICO elemento <tissFault> (o código como texto, ex.
+# "LoginInvalido"/"SchemaInvalido"/"DestinatarioInvalido"), sem campo de
+# descrição separado — _parse_response/_parse_cancelamento_response abaixo
+# corrigidos para ler essa estrutura (fault genérico soap:Fault, com ou sem
+# detail/tissFaultWS — alguns faults são só erro de schema/transporte, sem
+# chegar a gerar um tissFaultWS estruturado).
 MOCK_FAULT_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <sch:tissFaultWS xmlns:sch="http://www.ans.gov.br/padroes/tiss/schemas">
-      <sch:codigoErro>LoginInvalido</sch:codigoErro>
-      <sch:descricaoErro>Login ou senha inválidos (mock)</sch:descricaoErro>
-    </sch:tissFaultWS>
+    <soap:Fault>
+      <faultcode>soap:Client</faultcode>
+      <faultstring>LoginInvalido</faultstring>
+      <detail>
+        <sch:tissFaultWS xmlns:sch="http://www.ans.gov.br/padroes/tiss/schemas">
+          <sch:tissFault>LoginInvalido</sch:tissFault>
+        </sch:tissFaultWS>
+      </detail>
+    </soap:Fault>
   </soap:Body>
 </soap:Envelope>"""
 
@@ -192,18 +207,53 @@ def _is_mock_enabled() -> bool:
     return getattr(settings, 'TISS_SOAP_MOCK', False)
 
 
+def _parse_fault(doc, raw_response: str) -> 'SOAPFaultResult | None':
+    """
+    CORREÇÃO 2026-08-10: a estrutura real de fault do Autorize (confirmada
+    contra os 7 exemplos do Cap. 11 do manual 4.03.00) é um soap:Fault
+    padrão — `faultcode`/`faultstring` no corpo do fault, e opcionalmente
+    `<detail><tissFaultWS><tissFault>CODIGO</tissFault></tissFaultWS>
+    </detail>` para faults de negócio (ex. LoginInvalido). Faults de
+    schema/transporte puro (XML inválido, versão errada, registro ANS
+    inválido — exemplos 1,5,6,7 do manual) NÃO têm `detail/tissFaultWS`
+    nenhum, só `faultstring` com a mensagem técnica de validação.
+
+    Busca por `.//{*}Fault` (elemento SOAP padrão, independente do prefixo
+    soap:/soapenv:/s:) em vez do antigo `.//{*}tissFaultWS` — esse elemento
+    só existe nos faults de negócio, então detectar por ele perdia todos os
+    faults de schema/transporte (a maioria dos 7 exemplos do manual).
+
+    Retorna None se não houver soap:Fault nenhum no documento (deixa o
+    caller tentar o caminho de sucesso).
+    """
+    fault = doc.find('.//{*}Fault')
+    if fault is None:
+        return None
+
+    faultstring_el = fault.find('{*}faultstring')
+    faultstring = faultstring_el.text if faultstring_el is not None else ''
+
+    tissfault_el = fault.find('.//{*}tissFault')
+    if tissfault_el is not None and tissfault_el.text:
+        codigo = tissfault_el.text
+    else:
+        # Fault de schema/transporte puro, sem tissFaultWS estruturado —
+        # a mensagem técnica de faultstring é o único dado disponível.
+        codigo = faultstring or 'erro_desconhecido'
+
+    return SOAPFaultResult(
+        codigo_erro=codigo,
+        descricao_erro=faultstring,
+        raw_response=raw_response,
+    )
+
+
 def _parse_response(raw_response: str):
     doc = etree.fromstring(raw_response.encode('utf-8'))
 
-    fault = doc.find('.//{*}tissFaultWS')
+    fault = _parse_fault(doc, raw_response)
     if fault is not None:
-        codigo_el = fault.find('.//{*}codigoErro')
-        descricao_el = fault.find('.//{*}descricaoErro')
-        return SOAPFaultResult(
-            codigo_erro=(codigo_el.text if codigo_el is not None else ''),
-            descricao_erro=(descricao_el.text if descricao_el is not None else ''),
-            raw_response=raw_response,
-        )
+        return fault
 
     autorizacao = doc.find('.//{*}autorizacaoSP-SADT')
     if autorizacao is not None:
@@ -229,15 +279,9 @@ def _parse_response(raw_response: str):
 def _parse_cancelamento_response(raw_response: str):
     doc = etree.fromstring(raw_response.encode('utf-8'))
 
-    fault = doc.find('.//{*}tissFaultWS')
+    fault = _parse_fault(doc, raw_response)
     if fault is not None:
-        codigo_el = fault.find('.//{*}codigoErro')
-        descricao_el = fault.find('.//{*}descricaoErro')
-        return SOAPFaultResult(
-            codigo_erro=(codigo_el.text if codigo_el is not None else ''),
-            descricao_erro=(descricao_el.text if descricao_el is not None else ''),
-            raw_response=raw_response,
-        )
+        return fault
 
     recibo = doc.find('.//{*}reciboCancelaGuia')
     if recibo is not None:
