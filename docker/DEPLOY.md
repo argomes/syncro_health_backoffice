@@ -7,20 +7,30 @@ negócio depende de recurso específico do Railway.
 
 ## Railway (hoje)
 
-Railway detecta o `Dockerfile` na raiz automaticamente e builda por ele — não
-precisa de `railway.toml` a menos que você queira fixar o healthcheck path
-explicitamente (`/health/`, já criado). Suba como **serviços separados** no
-mesmo projeto Railway:
+Railway detecta o `Dockerfile` na raiz automaticamente e builda por ele —
+não usar `railway.toml` (removido em 2026-08-10: o "Custom Start Command"
+configurado no dashboard sobrescreve silenciosamente o que estiver lá, sem
+nenhum aviso — foi causa real de um deploy quebrado por horas sem log
+nenhum visível, porque o container nunca passava pelo `docker/entrypoint.sh`
+de verdade). Configure tudo direto no dashboard de cada serviço — fonte de
+verdade única. Suba como **serviços separados** no mesmo projeto Railway:
 
-1. **backoffice** (web) — usa o `Dockerfile` da raiz, comando padrão
-   (`CMD` já definido no Dockerfile: gunicorn). Configure a porta 8000 e o
-   healthcheck em `/health/`.
-2. **worker** — mesmo repo/Dockerfile, mas sobrescreva o comando de start no
-   Railway pra `celery -A syncro_backoffice worker --loglevel=info`. Sem
-   isso, tickets do Notion e módulos de clínica que dependem de Celery
-   silenciosamente nunca processam (ou processam síncrono se
-   `CELERY_TASK_ALWAYS_EAGER` estiver mal configurado — não confie nisso em
-   produção).
+1. **backoffice** (web) — usa o `Dockerfile` da raiz. **Deixe o "Custom
+   Start Command" em branco** no dashboard, para usar o `ENTRYPOINT`/`CMD`
+   da imagem (`docker/entrypoint.sh` roda `migrate`+`collectstatic` antes
+   do gunicorn, respeitando `$PORT` dinâmico do Railway — nunca hardcode
+   uma porta fixa aqui). Configure o healthcheck em `/health/ready/` (não
+   `/health/` — precisa confirmar banco acessível de verdade, ver
+   `syncro_backoffice/urls.py:health_check_ready`) com timeout generoso
+   (300s+ — `migrate` com o seed completo de códigos TUSS pode passar de
+   2 minutos num banco recém-criado).
+2. **worker** — mesmo repo/Dockerfile, mas o "Custom Start Command" no
+   dashboard PRECISA ser `celery -A syncro_backoffice worker --loglevel=info`
+   explicitamente. Sem isso, o serviço cai no `CMD` padrão do Dockerfile
+   (gunicorn) e sobe um segundo servidor web em vez do worker — tickets do
+   Notion e módulos de clínica que dependem de Celery silenciosamente nunca
+   processam (ou processam síncrono se `CELERY_TASK_ALWAYS_EAGER` estiver
+   mal configurado — não confie nisso em produção).
 3. **Postgres** — plugin gerenciado do Railway (ou continue no Neon, como
    está hoje em `.env.production`) — não precisa ser um container.
 4. **Redis** — plugin gerenciado do Railway.
