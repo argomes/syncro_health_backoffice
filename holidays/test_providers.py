@@ -95,20 +95,63 @@ class HolidayProviderTestCase(TestCase):
         self.assertEqual(mock_get.call_args_list[2].kwargs['params']['page'], 3)
 
     @patch('requests.get')
-    def test_provider_erro_http_primeira_pagina_retorna_lista_vazia(self, mock_get):
+    def test_provider_erro_http_todos_endpoints_retorna_lista_vazia(self, mock_get):
+        # Cidade falha (cota estourada) E o fallback nacional/estadual
+        # também falha -> só aí a lista fica realmente vazia.
         mock_get.return_value = _make_response(500)
+
+        resultado = self.provider.find_municipal_holidays(ibge_code="3534401", year=2026)
+
+        self.assertEqual(resultado, [])
+        self.assertEqual(mock_get.call_count, 3)  # cidade + nacionais + estado, todos falhando
+
+    @patch('requests.get')
+    def test_provider_timeout_todos_endpoints_retorna_lista_vazia(self, mock_get):
+        mock_get.side_effect = Timeout("timed out")
 
         resultado = self.provider.find_municipal_holidays(ibge_code="3534401", year=2026)
 
         self.assertEqual(resultado, [])
 
     @patch('requests.get')
-    def test_provider_timeout_primeira_pagina_retorna_lista_vazia(self, mock_get):
-        mock_get.side_effect = Timeout("timed out")
+    def test_provider_cidade_falha_fallback_nacional_estadual_funciona(self, mock_get):
+        # Cenário real do bug: cota mensal da API estourou pra município
+        # não-capital (endpoint /cidade retorna erro), mas nacional e
+        # estadual são gratuitos e devem preencher o vazio.
+        resposta_cidade_erro = _make_response(500)
+        resposta_nacional = _make_response(
+            200, feriados=[_make_feriado("Confraternização Universal", "01/01/2026", tipo="NACIONAL")]
+        )
+        resposta_estadual = _make_response(
+            200, feriados=[_make_feriado("Revolução Constitucionalista", "09/07/2026", tipo="ESTADUAL")]
+        )
+        mock_get.side_effect = [resposta_cidade_erro, resposta_nacional, resposta_estadual]
 
+        # 3534401 = Osasco/SP, código IBGE começa com "35" (SP), não é capital.
         resultado = self.provider.find_municipal_holidays(ibge_code="3534401", year=2026)
 
-        self.assertEqual(resultado, [])
+        self.assertEqual(len(resultado), 2)
+        nomes = {f['nome'] for f in resultado}
+        self.assertEqual(nomes, {"Confraternização Universal", "Revolução Constitucionalista"})
+
+        # Confirma que a 2ª e 3ª chamadas foram pros endpoints gratuitos corretos.
+        self.assertIn("/v1/feriados/nacionais", mock_get.call_args_list[1].args[0])
+        self.assertIn("/v1/feriados/estado/SP", mock_get.call_args_list[2].args[0])
+
+    @patch('requests.get')
+    def test_provider_cidade_falha_ibge_invalido_busca_so_nacional(self, mock_get):
+        # Se o prefixo do código IBGE não é reconhecido, não há UF pra
+        # derivar -> busca só o endpoint nacional, sem quebrar.
+        resposta_cidade_erro = _make_response(500)
+        resposta_nacional = _make_response(
+            200, feriados=[_make_feriado("Confraternização Universal")]
+        )
+        mock_get.side_effect = [resposta_cidade_erro, resposta_nacional]
+
+        resultado = self.provider.find_municipal_holidays(ibge_code="0000000", year=2026)
+
+        self.assertEqual(len(resultado), 1)
+        self.assertEqual(mock_get.call_count, 2)
 
     @patch('requests.get')
     def test_provider_erro_em_pagina_subsequente_retorna_parcial(self, mock_get):
