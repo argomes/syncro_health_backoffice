@@ -43,6 +43,18 @@ if [ "$1" = "gunicorn" ]; then
         exit 1
     fi
 
+    # 2026-08-12: import_municipios nunca tinha rodado em produção — a tabela
+    # ficou vazia desde sempre, quebrando silenciosamente a busca de município
+    # no Setup Wizard do app desktop (endpoint respondia 200 com lista vazia,
+    # nenhum erro visível em lugar nenhum). Comando é idempotente
+    # (update_or_create por codigo_ibge), seguro rodar em todo boot — garante
+    # que a tabela nunca fica vazia de novo, mesmo após reset de banco.
+    echo "[entrypoint] importando/atualizando base de municípios (IBGE)..."
+    if ! python manage.py import_municipios 2>&1; then
+        echo "[entrypoint] AVISO: import_municipios falhou — não é fatal, mas a"
+        echo "[entrypoint] busca de município no app vai ficar sem resultados."
+    fi
+
     # Railway injeta $PORT dinamicamente (não necessariamente 8000 — em
     # produção observado 8080) e roteia o healthcheck/tráfego pra essa
     # porta. $PORT ausente (docker-compose local/VPS) cai para 8000, mesmo
