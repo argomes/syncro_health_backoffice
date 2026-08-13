@@ -130,6 +130,18 @@ PROVISIONING_PORT = env.int('PROVISIONING_PORT', default=5432)
 # (TASK-053, homologação). Vazio = comportamento anterior, banco vazio.
 CLINIC_DB_TEMPLATE = env('CLINIC_DB_TEMPLATE', default='')
 
+# EDGW-094: host:porta PÚBLICO (proxy TCP do Railway, ou o host que for usado
+# no futuro se o Postgres das clínicas for movido pra fora do projeto atual)
+# do cluster Postgres das clínicas — devolvido pro Gateway (fora da rede do
+# Railway, roda no computador da clínica) junto com as credenciais em
+# ClinicViewSet.credentials, autenticado por license_key. Nunca fixo em
+# código — só variável de ambiente, trocável no dashboard sem deploy.
+# Diferente de PROVISIONING_HOST/PROVISIONING_PORT acima (esses são o host
+# INTERNO, usado só por processos que já rodam dentro da rede do Railway,
+# como o próprio backoffice acessando o banco da clínica pro suporte remoto).
+CLINIC_DB_PUBLIC_HOST = env('CLINIC_DB_HOST', default='')
+CLINIC_DB_PUBLIC_PORT = env.int('CLINIC_DB_PORT', default=5432)
+
 AUTH_USER_MODEL = 'accounts.SupportUser'
 
 AUTH_PASSWORD_VALIDATORS = [

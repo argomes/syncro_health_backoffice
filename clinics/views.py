@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.utils import timezone
 from django.core.cache import cache
 from datetime import timedelta
@@ -66,8 +67,13 @@ class ClinicViewSet(viewsets.ModelViewSet):
     )
     def credentials(self, request):
         """
-        Retorna as credenciais do banco criptografadas com a chave pública da clínica.
-        Apenas o app desktop consegue descriptografar com sua chave privada.
+        Retorna as credenciais do banco (+ host/porta de conexão) criptografadas
+        com a chave pública da clínica. Apenas o app desktop (Gateway) consegue
+        descriptografar a senha com sua chave privada — host/porta não são
+        segredo (endereço de rede), só trafegam autenticados por license_key
+        pelo mesmo motivo de tudo aqui: nunca adivinhados/hardcoded no cliente
+        (EDGW-094 — Gateway antes tentava extrair o host da URL do site, que
+        nunca é o endereço real do Postgres).
         """
         clinic: Clinic = request.clinic
 
@@ -77,10 +83,20 @@ class ClinicViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_424_FAILED_DEPENDENCY,
             )
 
+        # EDGW-094: registra a solicitação antes de devolver a URL de conexão —
+        # rastreabilidade de acesso (LGPD, CLAUDE.md 4.1), mesmo padrão já usado
+        # em db_access_grant/db_access_revoke. Nunca loga a senha (nem cifrada).
+        logger.info(
+            "credentials solicitadas clinic_id=%s db_name=%s",
+            clinic.id, clinic.db_name,
+        )
+
         return Response({
             'db_name': clinic.db_name,
             'db_user': clinic.db_user,
             'db_password_encrypted': clinic.db_password_encrypted,
+            'db_host': settings.CLINIC_DB_PUBLIC_HOST,
+            'db_port': settings.CLINIC_DB_PUBLIC_PORT,
         })
 
     @action(
