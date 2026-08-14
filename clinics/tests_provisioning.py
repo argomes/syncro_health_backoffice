@@ -1,12 +1,22 @@
+import unittest
 from unittest.mock import patch, MagicMock
+from django.conf import settings
+from django.db.models.signals import post_save
 from django.test import TestCase
 from django.utils import timezone
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 import uuid
 
+import psycopg2
+
 from clinics.models import Clinic, ClinicStatus, ProvisioningStatus, Plan
-from clinics.provisioning import provision_clinic_database, encrypt_with_public_key, _validate_pg_identifier
+from clinics.provisioning import (
+    provision_clinic_database,
+    deprovision_clinic_database,
+    encrypt_with_public_key,
+    _validate_pg_identifier,
+)
 
 
 class ProvisioningFunctionsTest(TestCase):
@@ -380,3 +390,125 @@ class ProvisioningIdempotentTest(TestCase):
         self.assertTrue(any('CREATE USER' in c for c in calls))
         self.assertTrue(any('CREATE DATABASE' in c for c in calls))
         self.assertFalse(any('ALTER USER' in c for c in calls))
+
+
+def _provisioning_postgres_available() -> bool:
+    """
+    True quando `PROVISIONING_DATABASE_URL` está configurado E o Postgres
+    responde de verdade. Usado para pular a suíte de integração (EDGW-091)
+    em ambientes sem Postgres real (ex.: CI sem serviço de banco) — mesma
+    convenção do projeto de nunca depender de Docker/Postgres real em
+    testes E2E por padrão (ver docs/feedback_e2e_no_containers), com a
+    exceção explícita e documentada aqui: aplicação de schema SQL não pode
+    ser validada com mocks — o próprio SQL precisa rodar contra um Postgres
+    de verdade para provar que os arquivos em clinics/sql/clinic_schema/
+    são válidos e se aplicam sem erro, fim a fim.
+    """
+    url = getattr(settings, 'PROVISIONING_DATABASE_URL', '')
+    if not url:
+        return False
+    try:
+        conn = psycopg2.connect(url, connect_timeout=2)
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(
+    _provisioning_postgres_available(),
+    "PROVISIONING_DATABASE_URL não configurado ou Postgres indisponível — "
+    "suíte de integração EDGW-091 pulada (precisa de Postgres real, não é "
+    "mockável: valida que o SQL em clinics/sql/clinic_schema/ aplica sem erro).",
+)
+class ProvisioningSchemaApplicationIntegrationTest(TestCase):
+    """
+    EDGW-091 — prova, contra um Postgres real, que `provision_clinic_database`
+    deixa o banco da clínica com o schema completo aplicado (não mais um
+    banco vazio dependente de CLINIC_DB_TEMPLATE). Roda as migrations de
+    `clinics/sql/clinic_schema/*.sql` de verdade e confere que tabelas
+    representativas de áreas centrais do domínio (paciente/agenda/RBAC)
+    existem depois do provisionamento.
+    """
+
+    EXPECTED_TABLES = ('patients', 'appointments', 'roles', 'permissions')
+
+    def _make_clinic(self, slug: str) -> Clinic:
+        # Mesmo padrão de desconexão do signal usado em
+        # ProvisioningClinicDbTemplateTest — evita duplo provisionamento
+        # (o post_save real dispara provision_on_key_received, que chamaria
+        # provision_clinic_database de novo em paralelo ao teste).
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+
+        from clinics.signals import provision_on_key_received
+
+        post_save.disconnect(provision_on_key_received, sender=Clinic)
+        try:
+            return Clinic.objects.create(
+                name='Clínica Integração EDGW-091', slug=slug,
+                plan=Plan.PROFESSIONAL, status=ClinicStatus.ACTIVE,
+                cnpj=f'{uuid.uuid4().hex[:14]}/0001-00',
+                public_key_pem=public_pem,
+            )
+        finally:
+            post_save.connect(provision_on_key_received, sender=Clinic)
+
+    def _table_exists(self, db_name: str, table_name: str) -> bool:
+        conn = psycopg2.connect(settings.PROVISIONING_DATABASE_URL, dbname=db_name)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name = %s)",
+                (table_name,),
+            )
+            return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    def _user_has_insert_privilege(self, db_name: str, db_user: str, table_name: str) -> bool:
+        conn = psycopg2.connect(settings.PROVISIONING_DATABASE_URL, dbname=db_name)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT has_table_privilege(%s, %s, 'INSERT')",
+                (db_user, table_name),
+            )
+            return cur.fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_provision_applies_full_schema_to_new_database(self):
+        slug = f"edgw091-{uuid.uuid4().hex[:8]}"
+        clinic = self._make_clinic(slug)
+        db_name = None
+        db_user = None
+        try:
+            db_name, db_user, encrypted_password = provision_clinic_database(clinic)
+
+            self.assertIsNotNone(encrypted_password)
+
+            for table in self.EXPECTED_TABLES:
+                with self.subTest(table=table):
+                    self.assertTrue(
+                        self._table_exists(db_name, table),
+                        f"Tabela {table!r} não existe em {db_name} após o "
+                        "provisionamento — schema não foi aplicado (EDGW-091).",
+                    )
+
+            # Confirma que o GRANT automatizado (mesmo gap que exigia
+            # correção manual via SSH para clinic_ambar_odonto) realmente
+            # deu ao usuário da clínica privilégio de escrita nas tabelas
+            # recém-criadas — não só que elas existem.
+            self.assertTrue(
+                self._user_has_insert_privilege(db_name, db_user, 'patients'),
+                f"Usuário {db_user!r} sem privilégio INSERT em 'patients' "
+                "— GRANT automatizado (EDGW-091) não foi aplicado.",
+            )
+        finally:
+            if db_name and db_user:
+                deprovision_clinic_database(db_name, db_user)
