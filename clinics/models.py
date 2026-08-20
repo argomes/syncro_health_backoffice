@@ -32,6 +32,25 @@ class Clinic(models.Model):
     plan = models.CharField(max_length=20, choices=Plan, default=Plan.STARTER)
     status = models.CharField(max_length=20, choices=ClinicStatus, default=ClinicStatus.ACTIVE)
     cnpj = models.CharField(max_length=18, unique=True, blank=True)
+    # CNES (Cadastro Nacional de Estabelecimentos de Saúde) — código numérico
+    # nacional (padrão 7 dígitos) exigido junto com o CNPJ em toda guia TISS
+    # (ver `cnpj_and_cnes_required_for_tiss` no gateway). Não é unique: uma
+    # mesma clínica pode ter múltiplas unidades cadastradas com o mesmo CNES
+    # não é a regra, mas nada nas normas TISS garante unicidade global aqui
+    # como garante para CNPJ — por isso não replicamos a constraint UNIQUE.
+    cnes = models.CharField(
+        max_length=7,
+        blank=True,
+        default='',
+        # db_default (não só default do Python) grava o DEFAULT '' no
+        # próprio schema — sem isso, o Django SQLite backend só usa o
+        # default no backfill desta migration, e qualquer INSERT que não
+        # liste explicitamente a coluna `cnes` (ex.: código rodando contra
+        # um model state anterior a esta migration, como em testes de
+        # migração) quebra com NOT NULL constraint.
+        db_default='',
+        help_text='Código CNES (Cadastro Nacional de Estabelecimentos de Saúde), 7 dígitos numéricos — obrigatório para geração de guias TISS.',
+    )
     contact_email = models.EmailField(blank=True)
     contact_phone = models.CharField(max_length=20, blank=True)
     active_modules = models.JSONField(default=list, blank=True)

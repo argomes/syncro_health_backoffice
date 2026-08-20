@@ -27,7 +27,7 @@ class ClinicAdmin(TenantScopedAdminMixin, BaseAdmin):
         'preco_promocional', 'desconto_fidelidade_ano2', 'created_at',
     )
     list_filter = ('plan', 'status', 'preco_promocional', 'desconto_fidelidade_ano2')
-    search_fields = ('name', 'slug', 'contact_email')
+    search_fields = ('name', 'slug', 'contact_email', 'cnpj', 'cnes')
     readonly_fields = (
         'id', 'license_key', 'created_at', 'updated_at',
         'price_adjusted_at', 'promotional_slots_info',

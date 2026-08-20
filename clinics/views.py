@@ -216,6 +216,7 @@ class ClinicViewSet(viewsets.ModelViewSet):
             'plan': clinic.plan,
             'clinic_name': clinic.name,
             'cnpj': clinic.cnpj,
+            'cnes': clinic.cnes,
             'db_name': clinic.db_name,
             'provisioning_status': clinic.provisioning_status,
         })
