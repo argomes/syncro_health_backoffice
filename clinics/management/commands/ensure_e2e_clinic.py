@@ -48,6 +48,7 @@ class Command(BaseCommand):
                 'name': 'Clínica E2E Sync (CROSS-017.1)',
                 'license_key': E2E_SYNC_LICENSE_KEY,
                 'cnpj': _unused_fictitious_cnpj(),
+                'cnes': '1234567',  # valor fictício de teste — 7 dígitos, padrão CNES
                 'active_modules': ['billing', 'tiss'],
             },
         )

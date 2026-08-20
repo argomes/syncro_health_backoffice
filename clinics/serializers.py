@@ -7,7 +7,7 @@ class ClinicSerializer(serializers.ModelSerializer):
         model = Clinic
         fields = [
             'id', 'name', 'slug', 'license_key',
-            'plan', 'status', 'contact_email', 'contact_phone',
+            'plan', 'status', 'cnpj', 'cnes', 'contact_email', 'contact_phone',
             'provisioning_status',
             'created_at', 'updated_at',
         ]
