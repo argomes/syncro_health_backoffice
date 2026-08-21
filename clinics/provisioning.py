@@ -1,5 +1,6 @@
 import base64
 import logging
+import pathlib
 import re
 import secrets
 import string
@@ -10,6 +11,70 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+# EDGW-091: diretório canônico com as migrations SQL do schema de clínica,
+# espelhadas de syncro_gateway/internal/adapters/output/cloud/migrations/
+# (único diretório referenciado pelo código Go — o segundo diretório
+# histórico, database/migrations/postgres/, foi consolidado aqui, ver
+# EDGW-095). Mantidas como cópia versionada dentro deste repo porque em
+# produção (Railway) só o container do backoffice existe — o repo do
+# gateway não está disponível no filesystem em runtime.
+_CLINIC_SCHEMA_DIR = pathlib.Path(__file__).resolve().parent / 'sql' / 'clinic_schema'
+
+
+def _apply_clinic_schema(db_name: str, db_user: str) -> None:
+    """
+    Aplica, em ordem numérica, todos os arquivos .sql de `_CLINIC_SCHEMA_DIR`
+    no banco recém-criado da clínica (conexão direta ao banco, não ao banco
+    de administração usado por `_superuser_conn`).
+
+    Chamada apenas uma vez, logo após `CREATE DATABASE`, num banco vazio —
+    por isso não há checagem de idempotência arquivo-a-arquivo (não é um
+    framework de migration incremental, é a aplicação do schema base).
+
+    Levanta a exceção original em caso de falha — tratado pelo chamador
+    (`provision_clinic_database`), que converte em RuntimeError e loga sem
+    expor dado sensível.
+    """
+    q_user = _quote_ident(db_user)
+    sql_files = sorted(_CLINIC_SCHEMA_DIR.glob('*.sql'))
+    if not sql_files:
+        raise RuntimeError(
+            f"Nenhum arquivo de schema encontrado em {_CLINIC_SCHEMA_DIR}"
+        )
+
+    # Conexão nova, direta ao banco da clínica — a conexão de
+    # `_superuser_conn()` está presa ao banco de administração
+    # (PROVISIONING_DATABASE_URL) e não pode trocar de banco em runtime.
+    dsn = settings.PROVISIONING_DATABASE_URL
+    schema_conn = psycopg2.connect(dsn, dbname=db_name)
+    schema_conn.autocommit = True
+    try:
+        schema_cur = schema_conn.cursor()
+        for sql_file in sql_files:
+            logger.info(
+                "provisioning_apply_schema_file db=%s file=%s",
+                db_name, sql_file.name,
+            )
+            sql_text = sql_file.read_text(encoding='utf-8')
+            schema_cur.execute(sql_text)
+
+        # Mesmo gap de ownership corrigido manualmente repetidas vezes
+        # nesta semana (clinic_ambar_odonto): as tabelas/sequences criadas
+        # pelas migrations pertencem a quem aplicou o schema (a conexão
+        # atual, autenticada via PROVISIONING_DATABASE_URL), não ao
+        # db_user recém-criado da clínica — sem os GRANTs abaixo, o
+        # Gateway recebe "permission denied" na primeira conexão real.
+        schema_cur.execute(
+            f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {q_user}"
+        )
+        schema_cur.execute(
+            f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {q_user}"
+        )
+        schema_cur.close()
+    finally:
+        schema_conn.close()
+
 
 # Identificadores PostgreSQL: apenas letras minúsculas, dígitos e underscore.
 # Máximo 63 chars (limite do Postgres). Deve começar com letra.
@@ -116,6 +181,17 @@ def provision_clinic_database(clinic) -> tuple[str, str, str]:
                 cur.execute(f"GRANT clinic_template_owner TO {q_user}")
             else:
                 cur.execute(f"CREATE DATABASE {q_db} OWNER {q_user}")
+
+            # EDGW-091: aplica o schema base (patients/appointments/RBAC/dual
+            # envelope, ver `_CLINIC_SCHEMA_DIR`) sempre que o banco é novo —
+            # independente de CLINIC_DB_TEMPLATE estar configurado. Elimina a
+            # dependência de um "banco molde" pré-existente (só criado
+            # localmente via docker/postgres-init/01-clinic-template.sh, nunca
+            # em produção) que podia ficar desatualizado silenciosamente a
+            # cada migration nova do gateway. Roda só aqui dentro do bloco
+            # `if not db_exists` — reprovisionamento de clínica já existente
+            # (CROSS-017.1) não deve reaplicar schema num banco já em uso.
+            _apply_clinic_schema(db_name, db_user)
 
         cur.execute(f"REVOKE ALL ON DATABASE {q_db} FROM PUBLIC")
         cur.close()
