@@ -21,7 +21,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.db import connection as db_connection
 from django.test import TransactionTestCase
 
-_TISS_HEAD = ('tiss', '0012_tissoperatorconfig_remove_transport_fields')
+_TISS_HEAD = ('tiss', '0017_tissoperatorconfig_ans_operator')
 
 
 class BackfillTISSOperatorConnectionMigrationTests(TransactionTestCase):
@@ -84,8 +84,13 @@ class BackfillTISSOperatorConnectionMigrationTests(TransactionTestCase):
             login_encrypted='tok-login-amil-cifrado', senha_encrypted='tok-senha-amil-cifrado',
         )
 
-        # 2. Roda 0010→0012 (schema + backfill 0011 + remoção dos campos antigos).
-        self._migrate([('tiss', '0012_tissoperatorconfig_remove_transport_fields')])
+        # 2. Roda 0010→HEAD (schema + backfill 0011 + remoção dos campos
+        # antigos + qualquer migração posterior). Precisa ir até HEAD, não só
+        # 0012: o import abaixo usa o model `TISSOperatorConfig` do módulo
+        # `.models` ATUAL (com todos os campos de HEAD, ex.: `ans_operator`
+        # adicionado em 0017) — se o schema parasse em 0012, a query falharia
+        # com "no such column" pra qualquer campo adicionado depois.
+        self._migrate([_TISS_HEAD])
 
         from .models import TISSOperatorConfig, TISSOperatorConnection
 

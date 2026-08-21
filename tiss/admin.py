@@ -53,6 +53,12 @@ class TISSOperatorConfigAdmin(TenantScopedAdminMixin, BaseAdmin):
     list_filter = ('ativo', 'connection__gateway_provider')
     search_fields = ('nome_operadora', 'registro_ans', 'clinic__name')
     readonly_fields = ('id', 'created_at', 'updated_at', 'capacidades', 'conexao', 'integracao_automatica_selo')
+    # ans_operator preenche nome_operadora/registro_ans/cnpj_operadora
+    # sozinho em TISSOperatorConfig.save() — evita redigitar um dado que já
+    # existe em ANSInsuranceOperator (usabilidade pedida pelo PO). Requer
+    # autocomplete_fields (não select simples) porque a tabela de referência
+    # pode crescer bastante.
+    autocomplete_fields = ('ans_operator',)
     actions = ['testar_conexao']
 
     @admin.display(description='Integração', boolean=False)
