@@ -149,6 +149,12 @@ class TISSOperatorConfig(models.Model):
         TISSOperatorConnection, on_delete=models.PROTECT, related_name='operator_configs',
         help_text='Transporte/endpoint/credencial compartilhados (ex.: a Orizon desta clínica).',
     )
+    ans_operator = models.ForeignKey(
+        'ANSInsuranceOperator', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='operator_configs',
+        help_text='Selecione uma operadora já cadastrada na tabela de referência ANS para '
+                   'preencher automaticamente nome/registro ANS/CNPJ abaixo, sem redigitar.',
+    )
     nome_operadora = models.CharField(max_length=70)
     registro_ans = models.CharField(max_length=6, help_text='Registro ANS da operadora (6 dígitos)')
     cnpj_operadora = models.CharField(max_length=14, blank=True)
@@ -188,6 +194,20 @@ class TISSOperatorConfig(models.Model):
     def clean(self):
         if self.connection_id and self.clinic_id and self.connection.clinic_id != self.clinic_id:
             raise ValidationError('connection pertence a outra clínica — violação de isolamento multi-tenant')
+
+    def save(self, *args, **kwargs):
+        # Usabilidade do admin: quando o operador escolhe `ans_operator` (uma
+        # operadora já cadastrada na tabela de referência ANS), preenche
+        # nome_operadora/registro_ans/cnpj_operadora a partir dela — evita
+        # redigitar um dado que já existe em ANSInsuranceOperator. Só
+        # sobrescreve quando `ans_operator` está de fato selecionado; os três
+        # campos continuam editáveis manualmente (clínica sem a operadora na
+        # tabela de referência, ou correção pontual) e nada aqui impede isso.
+        if self.ans_operator_id:
+            self.nome_operadora = self.ans_operator.name
+            self.registro_ans = self.ans_operator.ans_code
+            self.cnpj_operadora = self.ans_operator.cnpj
+        super().save(*args, **kwargs)
 
     def __str__(self):
         # Nunca incluir login/senha aqui.

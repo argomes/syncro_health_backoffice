@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.test import TestCase
 
 from clinics.models import Clinic
-from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSLoteStatus
+from .models import TISSOperatorConfig, TISSLote, TISSGuia, TISSGlosa, TISSLoteStatus, ANSInsuranceOperator
 from .crypto import decrypt_credential
 
 
@@ -57,6 +57,70 @@ class TISSOperatorConfigModelTests(TestCase):
         texto = str(op)
         self.assertNotIn('login-secreto', texto)
         self.assertNotIn('senha-secreta', texto)
+
+
+class TISSOperatorConfigAnsOperatorAutofillTests(TestCase):
+    """
+    Usabilidade do admin (pedido do PO): ao vincular `ans_operator` a uma
+    operadora já cadastrada na tabela de referência ANS, nome_operadora/
+    registro_ans/cnpj_operadora se preenchem sozinhos no save() — a
+    recepção/suporte não precisa redigitar um dado que já existe.
+    """
+
+    def test_save_com_ans_operator_preenche_os_tres_campos_sozinho(self):
+        clinic = _make_clinic('op-ans-autofill')
+        ans_op = ANSInsuranceOperator.objects.create(
+            ans_code='999888', name='Odontoprev Teste', cnpj='58119199000117',
+        )
+        op = TISSOperatorConfig(
+            clinic=clinic, ans_operator=ans_op,
+            endpoint_url='https://api.odontoprev.com.br/tiss',
+        )
+        op.save()
+
+        self.assertEqual(op.nome_operadora, 'Odontoprev Teste')
+        self.assertEqual(op.registro_ans, '999888')
+        self.assertEqual(op.cnpj_operadora, '58119199000117')
+
+        op.refresh_from_db()
+        self.assertEqual(op.nome_operadora, 'Odontoprev Teste')
+        self.assertEqual(op.registro_ans, '999888')
+        self.assertEqual(op.cnpj_operadora, '58119199000117')
+
+    def test_save_sem_ans_operator_mantem_preenchimento_manual(self):
+        # Nada muda pra quem não usa a busca (operadora sem registro na
+        # tabela de referência, ou preferência por digitar direto).
+        clinic = _make_clinic('op-ans-manual')
+        op = TISSOperatorConfig(
+            clinic=clinic, nome_operadora='Operadora Sem Referência ANS',
+            registro_ans='999999', endpoint_url='https://exemplo.com/tiss',
+        )
+        op.save()
+
+        self.assertIsNone(op.ans_operator_id)
+        self.assertEqual(op.nome_operadora, 'Operadora Sem Referência ANS')
+        self.assertEqual(op.registro_ans, '999999')
+
+    def test_editar_ans_operator_depois_atualiza_os_tres_campos_de_novo(self):
+        # Config já existente, criada manualmente — depois vinculada a uma
+        # operadora da tabela de referência: os campos devem sincronizar no
+        # próximo save(), não só na criação.
+        clinic = _make_clinic('op-ans-edicao-posterior')
+        op = TISSOperatorConfig(
+            clinic=clinic, nome_operadora='Odontoprev (digitado errado)',
+            registro_ans='000000', endpoint_url='https://exemplo.com/tiss',
+        )
+        op.save()
+
+        ans_op = ANSInsuranceOperator.objects.create(
+            ans_code='999888', name='Odontoprev Teste', cnpj='58119199000117',
+        )
+        op.ans_operator = ans_op
+        op.save()
+
+        self.assertEqual(op.nome_operadora, 'Odontoprev Teste')
+        self.assertEqual(op.registro_ans, '999888')
+        self.assertEqual(op.cnpj_operadora, '58119199000117')
 
 
 class TISSOperatorConfigIntegracaoAutomaticaTests(TestCase):

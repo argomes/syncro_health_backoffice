@@ -194,3 +194,14 @@ class TISSOperatorConfigAdminIntegracaoAutomaticaTests(TestCase):
 
     def test_selo_dash_sem_objeto(self):
         self.assertEqual(self.admin.integracao_automatica_selo(None), '—')
+
+
+class TISSOperatorConfigAdminAnsOperatorAutocompleteTests(TestCase):
+    """
+    Usabilidade pedida pelo PO: `ans_operator` precisa estar em
+    `autocomplete_fields`, senão o admin renderiza um <select> gigante com
+    toda `ANSInsuranceOperator` em vez de um campo de busca.
+    """
+
+    def test_ans_operator_esta_em_autocomplete_fields(self):
+        self.assertIn('ans_operator', TISSOperatorConfigAdmin.autocomplete_fields)
