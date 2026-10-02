@@ -1,3 +1,9 @@
+"""
+billing — faturamento SaaS DA SYNCRO (assinatura da clínica conosco: Plan,
+Invoice). NÃO é o faturamento clínico (o que a clínica cobra de
+paciente/convênio) — esse mora em `clinic_billing/` (TASK-BO-R07/R01). Não
+adicionar aqui nenhum model que represente dinheiro que a CLÍNICA recebeu.
+"""
 import uuid
 from django.db import models
 from clinics.models import Clinic

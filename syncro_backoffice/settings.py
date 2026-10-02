@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     'accounts',
     'clinics',
     'billing',
+    'clinic_billing',  # faturamento clínico (TASK-BO-R07) — distinto de `billing` (SaaS da Syncro)
     'metrics',
     'support',
     'integrations',
