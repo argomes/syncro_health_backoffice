@@ -31,7 +31,16 @@ CREATE TABLE IF NOT EXISTS appointment_payments (
     checksum       TEXT        NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_appointment_payments_appointment ON appointment_payments(appointment_id);
+-- Mesma invariante já enforced no SQLite local (ver
+-- syncro_gateway/internal/adapters/output/database/migrations/055_appointment_payments.sql:
+-- "1 pagamento particular ativo por atendimento") — sem este índice único
+-- condicional, a camada cloud dependia só da aplicação Go pra não duplicar,
+-- divergindo silenciosamente do que o comentário do domínio promete
+-- (achado do Principal Architect review, TASK-BO-R01).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_appointment_payments_appointment_active
+    ON appointment_payments(appointment_id)
+    WHERE deleted_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS idx_appointment_payments_patient     ON appointment_payments(patient_id);
 CREATE INDEX IF NOT EXISTS idx_appointment_payments_created_at  ON appointment_payments(created_at);
 
