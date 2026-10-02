@@ -50,8 +50,17 @@ def deprovision_on_delete(sender, instance, **kwargs):
     try:
         deprovision_clinic_database(instance.db_name, instance.db_user)
         logger.info("clinic_deprovisioned db=%s", instance.db_name)
-    except RuntimeError:
-        logger.error("clinic_deprovisioning_error db=%s", instance.db_name)
+    except Exception as exc:
+        # Bug real descoberto via TASK-BO-R01 (teste
+        # clinics.tests_sync_clinic_schema estourava em CI sem Postgres de
+        # provisionamento acessível): deprovision_clinic_database::_superuser_conn()
+        # chama psycopg2.connect() ANTES do try/except interno da função, então uma
+        # falha de conexão propaga como psycopg2.OperationalError, não RuntimeError
+        # — escapava deste except e derrubava a transação de delete() inteira.
+        # Deletar o registro local de uma clínica nunca deve quebrar porque o
+        # Postgres de provisionamento está inacessível; loga sem detalhe de
+        # conexão/credencial (regra LGPD 4.1) e segue.
+        logger.error("clinic_deprovisioning_error db=%s exc_type=%s", instance.db_name, type(exc).__name__)
 
 
 @receiver(post_save, sender=Clinic)
