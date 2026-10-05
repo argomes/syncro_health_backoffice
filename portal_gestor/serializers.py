@@ -3,14 +3,14 @@ from rest_framework import serializers
 from clinics.models import Clinic
 from support.models import Ticket, TicketMessage
 
-from .models import SUPPORTED_RESYNC_ENTITIES, ReportSession
+from .models import REPORT_SCOPE_ENTITIES, SUPPORTED_RESYNC_ENTITIES, ReportSession
 
 
 class ReportSessionCreateSerializer(serializers.Serializer):
     date_from = serializers.DateTimeField()
     date_to = serializers.DateTimeField()
     entities = serializers.ListField(
-        child=serializers.ChoiceField(choices=SUPPORTED_RESYNC_ENTITIES),
+        child=serializers.ChoiceField(choices=REPORT_SCOPE_ENTITIES),
         required=False,
         default=list,
     )

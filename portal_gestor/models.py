@@ -7,6 +7,41 @@ from django.utils import timezone
 # syncro_gateway — internal/adapters/input/workers/health_worker.go).
 SUPPORTED_RESYNC_ENTITIES = ('patients', 'appointments')
 
+# TASK-BO-R02 — `billing` é um escopo de AUTORIZAÇÃO de relatório, não uma
+# entidade que o gateway sabe ressincronizar: o faturamento no Postgres da
+# clínica é derivado de `appointments` (colunas tiss_*) + `appointment_payments`
+# (sem tabela `billing_entries` própria). Por isso fica fora de
+# SUPPORTED_RESYNC_ENTITIES e é traduzido para as entidades reais do gateway em
+# RESYNC_ENTITY_EXPANSION antes de ir no `resync_window` do heartbeat.
+BILLING_REPORT_ENTITY = 'billing'
+REPORT_SCOPE_ENTITIES = (*SUPPORTED_RESYNC_ENTITIES, BILLING_REPORT_ENTITY)
+
+# Escopo de relatório -> entidades que o gateway precisa reenfileirar com o
+# envelope da TemporaryKey para que a leitura funcione. `billing` precisa de
+# `appointments` ressincronizado sob a sessão: a operadora escolhida no
+# check-in (`insurance_choice`) só existe dentro de `appointments.metadata_enc`,
+# decriptável apenas com o `dek_encrypted_session` da sessão vigente.
+RESYNC_ENTITY_EXPANSION: dict[str, tuple[str, ...]] = {
+    BILLING_REPORT_ENTITY: ('appointments',),
+}
+
+
+def resync_entities_for_scope(entities_scope: list[str]) -> list[str]:
+    """Traduz o escopo autorizado da sessão nas entidades que o gateway sabe
+    ressincronizar, preservando a ordem e sem duplicar.
+
+    O gateway apenas loga e ignora entidade desconhecida
+    (health_worker.go::applyResyncWindow), então mandar `billing` cru não
+    quebraria nada — mas também não ressincronizaria `appointments`, e o
+    relatório por operadora ficaria inteiro em "não identificada".
+    """
+    resolved: list[str] = []
+    for entity in entities_scope:
+        for target in RESYNC_ENTITY_EXPANSION.get(entity, (entity,)):
+            if target not in resolved:
+                resolved.append(target)
+    return resolved
+
 DEFAULT_REPORT_SESSION_TTL_HOURS = getattr(settings, 'REPORT_SESSION_TTL_HOURS', 2)
 
 
@@ -134,7 +169,10 @@ class PortalReadAuditLog(models.Model):
     )
     entity = models.CharField(
         max_length=32,
-        help_text="Entidade acessada: 'patients', 'appointments', 'professionals' ou 'medical_records'.",
+        help_text=(
+            "Entidade acessada: 'patients', 'appointments', 'professionals', "
+            "'medical_records', 'billing' ou 'support_ticket'."
+        ),
     )
     record_count = models.PositiveIntegerField(
         help_text='Quantidade de registros retornados pela leitura — pode ser 0.',
