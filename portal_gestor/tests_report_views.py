@@ -328,3 +328,128 @@ class PortalReadAuditLogTest(TestCase):
         self.assertNotIn(phi_document, serialized_values)
         self.assertNotIn(phi_email, serialized_values)
         self.assertNotIn('informação clínica sensível', serialized_values)
+
+
+class BillingReportViewsTest(TestCase):
+    """TASK-BO-R02/R03 — wiring HTTP de /billing/ e /billing-summary/: auth,
+    anti-IDOR (404 para sessão de outra clínica), 403 propagado do gate e
+    auditoria de leitura com entity='billing'."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.clinic_a = make_clinic('Clínica A')
+        self.clinic_b = make_clinic('Clínica B')
+        self.user_a = make_clinic_user(self.clinic_a, email='gerente@a.com')
+        make_clinic_user(self.clinic_b, email='gerente@b.com')
+
+        self.session = services.create_report_session(
+            clinic=self.clinic_a, created_by=self.user_a, entities=['billing'],
+            date_from=timezone.now() - timedelta(days=30), date_to=timezone.now(),
+        )
+        self.session.status = ReportSessionStatus.KEY_DELIVERED
+        self.session.save(update_fields=['status'])
+        self.summary_url = f'/portal/api/reports/sessions/{self.session.session_id}/billing-summary/'
+        self.lines_url = f'/portal/api/reports/sessions/{self.session.session_id}/billing/'
+
+    def _login(self, email, password='senha-123'):
+        resp = self.client.post('/portal/api/auth/login/', {'email': email, 'password': password}, format='json')
+        return {'HTTP_AUTHORIZATION': f'Bearer {resp.data["access"]}'}
+
+    @staticmethod
+    def _summary(convenio_cents=0, convenio_count=0, particular_cents=0, particular_count=0):
+        return {
+            'period': {'from': None, 'to': None},
+            'currency': 'BRL',
+            'note': 'nota',
+            'total_geral': {
+                'label': 'Total faturado (convênio + particular)',
+                'total_cents': convenio_cents + particular_cents,
+                'count': convenio_count + particular_count,
+            },
+            'convenio': {'label': 'Faturado (convênio)', 'total_cents': convenio_cents, 'count': convenio_count},
+            'particular': {'label': 'Particular lançado', 'total_cents': particular_cents, 'count': particular_count},
+            'by_professional': [],
+            'by_operator': [],
+        }
+
+    @patch('portal_gestor.report_reads.read_billing_summary')
+    def test_summary_requires_auth(self, mock_read):
+        response = self.client.get(self.summary_url)
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        mock_read.assert_not_called()
+
+    @patch('portal_gestor.report_reads.read_billing_summary')
+    def test_summary_other_clinic_gets_404(self, mock_read):
+        response = self.client.get(self.summary_url, **self._login('gerente@b.com'))
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_read.assert_not_called()
+
+    @patch('portal_gestor.report_reads.read_billing_summary')
+    def test_summary_permission_denied_becomes_403_without_audit(self, mock_read):
+        mock_read.side_effect = PermissionDenied('entity_not_in_session_scope')
+
+        response = self.client.get(self.summary_url, **self._login('gerente@a.com'))
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(PortalReadAuditLog.objects.exists())
+
+    @patch('portal_gestor.report_reads.read_billing_summary')
+    def test_summary_happy_path_returns_payload_and_audits_entries_read(self, mock_read):
+        mock_read.return_value = self._summary(convenio_cents=53000, convenio_count=4,
+                                               particular_cents=47050, particular_count=3)
+
+        response = self.client.get(self.summary_url, **self._login('gerente@a.com'))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['total_geral']['total_cents'], 100050)
+        self.assertEqual(response.data['convenio']['label'], 'Faturado (convênio)')
+        mock_read.assert_called_once_with(self.clinic_a, self.session)
+
+        log = PortalReadAuditLog.objects.get()
+        self.assertEqual(log.entity, 'billing')
+        self.assertEqual(log.record_count, 7)
+        self.assertEqual(log.clinic_user, self.user_a)
+        self.assertEqual(log.session_id, self.session.session_id)
+
+    @patch('portal_gestor.report_reads.read_billing_summary')
+    def test_summary_with_zero_entries_still_audited(self, mock_read):
+        mock_read.return_value = self._summary()
+
+        response = self.client.get(self.summary_url, **self._login('gerente@a.com'))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['total_geral']['total_cents'], 0)
+        self.assertEqual(PortalReadAuditLog.objects.get().record_count, 0)
+
+    @patch('portal_gestor.report_reads.read_billing_report')
+    def test_billing_lines_wired_and_audited(self, mock_read):
+        mock_read.return_value = [{'id': 'x', 'payment_type': 'particular', 'amount_cents': 1000}]
+
+        response = self.client.get(self.lines_url, **self._login('gerente@a.com'))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        mock_read.assert_called_once_with(self.clinic_a, self.session)
+        log = PortalReadAuditLog.objects.get()
+        self.assertEqual((log.entity, log.record_count), ('billing', 1))
+
+    @patch('portal_gestor.report_reads.read_billing_report')
+    def test_billing_lines_other_clinic_gets_404(self, mock_read):
+        response = self.client.get(self.lines_url, **self._login('gerente@b.com'))
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_read.assert_not_called()
+
+    def test_create_session_accepts_billing_scope(self):
+        auth = self._login('gerente@a.com')
+        response = self.client.post('/portal/api/reports/sessions/', {
+            'entities': ['billing'],
+            'date_from': (timezone.now() - timedelta(days=30)).isoformat(),
+            'date_to': timezone.now().isoformat(),
+        }, format='json', **auth)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['entities_scope'], ['billing'])

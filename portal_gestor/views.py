@@ -109,10 +109,18 @@ class _ReportReadView(APIView):
             clinic=request.user.clinic,
             session_id=session.session_id,
             entity=self.entity_name,
-            record_count=len(results),
+            record_count=self.audit_record_count(results),
         )
 
-        return Response({'results': results, 'count': len(results)})
+        return Response(self.build_payload(results))
+
+    def audit_record_count(self, results) -> int:
+        """Quantos registros a leitura efetivamente acessou — vai para o log de
+        auditoria. Subclasses com resultado agregado (não lista) sobrescrevem."""
+        return len(results)
+
+    def build_payload(self, results) -> dict:
+        return {'results': results, 'count': len(results)}
 
 
 class PatientsReportView(_ReportReadView):
@@ -156,6 +164,39 @@ class MedicalRecordsReportView(_ReportReadView):
     """
     read_fn_name = 'read_medical_records_report'
     entity_name = 'medical_records'
+
+
+class BillingReportView(_ReportReadView):
+    """
+    GET /portal/api/reports/sessions/{session_id}/billing/
+
+    TASK-BO-R02 — lançamentos de faturamento (convênio + particular) da janela
+    da sessão. Exige `billing` no escopo da sessão. Sem dado de paciente: só
+    ids de atendimento/profissional/operadora, valores em centavos.
+    """
+    read_fn_name = 'read_billing_report'
+    entity_name = 'billing'
+
+
+class BillingSummaryView(_ReportReadView):
+    """
+    GET /portal/api/reports/sessions/{session_id}/billing-summary/
+
+    TASK-BO-R03 — total geral, convênio × particular, por profissional e por
+    operadora. Mesmo gate e mesma auditoria de leitura das demais views de
+    relatório (404 para sessão de outra clínica, 403 fora de escopo/expirada/
+    sem chave).
+    """
+    read_fn_name = 'read_billing_summary'
+    entity_name = 'billing'
+
+    def audit_record_count(self, results) -> int:
+        # O resumo é agregado, mas a operação de tratamento a registrar é o
+        # acesso aos lançamentos que entraram na soma — não "1 resumo".
+        return results['total_geral']['count']
+
+    def build_payload(self, results) -> dict:
+        return results
 
 
 class DashboardSummaryView(APIView):

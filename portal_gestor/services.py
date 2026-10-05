@@ -8,7 +8,12 @@ from django.core.cache import cache
 from django.db import connection, transaction
 from django.utils import timezone
 
-from .models import DEFAULT_REPORT_SESSION_TTL_HOURS, ReportSession, ReportSessionStatus
+from .models import (
+    DEFAULT_REPORT_SESSION_TTL_HOURS,
+    ReportSession,
+    ReportSessionStatus,
+    resync_entities_for_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +142,8 @@ def get_pending_session_key_payload(clinic) -> dict | None:
         'resync_window': {
             'from': session.date_from.isoformat(),
             'to': session.date_to.isoformat(),
-            'entities': session.entities_scope,
+            # Escopo de autorização (ex.: `billing`) traduzido nas entidades que
+            # o gateway sabe ressincronizar — ver models.RESYNC_ENTITY_EXPANSION.
+            'entities': resync_entities_for_scope(session.entities_scope),
         },
     }
