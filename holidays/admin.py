@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Feriado
+from .models import Feriado, FeriadoBusca
 
 @admin.register(Feriado)
 class FeriadoAdmin(admin.ModelAdmin):
@@ -18,3 +18,12 @@ class FeriadoAdmin(admin.ModelAdmin):
         }),
     )
     
+
+
+@admin.register(FeriadoBusca)
+class FeriadoBuscaAdmin(admin.ModelAdmin):
+    """Controle do cache: apagar uma linha força nova busca na API para o ibge/ano."""
+
+    list_display = ('ibge_code', 'year', 'fetched_at')
+    list_filter = ('year',)
+    search_fields = ('ibge_code',)

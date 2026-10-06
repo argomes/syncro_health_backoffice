@@ -1,7 +1,9 @@
 import datetime
+from unittest.mock import MagicMock, patch
+
 from django.test import TestCase
-from unittest.mock import patch, MagicMock
 from requests.exceptions import Timeout
+
 from holidays.providers import ApiHolidayProvider
 
 
@@ -167,3 +169,33 @@ class HolidayProviderTestCase(TestCase):
 
         self.assertEqual(len(resultado), 1)
         self.assertEqual(resultado[0]['nome'], "Feriado 1")
+
+class HolidayFetchResultCompletenessTestCase(TestCase):
+    """`fetch_holidays.complete` decide se o service marca o ibge/ano como buscado."""
+
+    def setUp(self):
+        self.provider = ApiHolidayProvider(api_key="test_token", api_url="https://feriadosapi.com/api")
+
+    @patch('requests.get')
+    def test_sucesso_cidade_e_completo(self, mock_get):
+        mock_get.return_value = _make_response(200, feriados=[_make_feriado("Ano Novo")])
+        self.assertTrue(self.provider.fetch_holidays("3534401", 2026).complete)
+
+    @patch('requests.get')
+    def test_pagina_subsequente_falha_e_incompleto(self, mock_get):
+        mock_get.side_effect = [
+            _make_response(200, feriados=[_make_feriado("Feriado 1")], page=1, total_pages=2),
+            Timeout("timed out"),
+        ]
+        with self.assertLogs('holidays', level='ERROR'):
+            result = self.provider.fetch_holidays("3534401", 2026)
+        self.assertFalse(result.complete)
+        self.assertEqual(len(result.feriados), 1)
+
+    @patch('requests.get')
+    def test_log_de_falha_nao_contem_api_key(self, mock_get):
+        mock_get.return_value = _make_response(401)
+        with self.assertLogs('holidays', level='ERROR') as logs:
+            self.provider.fetch_holidays("3534401", 2026)
+        self.assertNotIn("test_token", "\n".join(logs.output))
+        self.assertIn("status 401", "\n".join(logs.output))
