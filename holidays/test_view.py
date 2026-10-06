@@ -62,3 +62,59 @@ class HolidayViewTestCase(APITestCase):
         response_valido = self.client.get(self.url, {'ibge': '3534401', 'year': '2026'}, **auth_headers)
         self.assertEqual(response_valido.status_code, 200)
         self.assertEqual(len(response_valido.json()), 2)
+
+
+class FeriadoManualNoEndpointTest(APITestCase):
+    """Feriado cadastrado à mão no portal precisa chegar ao gateway.
+
+    Caso real: a feriadosapi.com não devolveu nenhum municipal de Osasco
+    (3534401). Com a busca já marcada (FeriadoBusca), o endpoint responde
+    do banco — sem tocar na API externa — e deve incluir os manuais.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.clinic = make_clinic()
+        self.auth = {'HTTP_X_LICENSE_KEY': str(self.clinic.license_key)}
+        self.url = reverse('listar_feriados_clinica')
+        FeriadoBusca.objects.create(ibge_code='3534401', year=2026)
+
+    def _cadastrar(self, **campos):
+        feriado = Feriado(**campos)
+        feriado.full_clean()  # mesmo caminho de validação do form do admin
+        feriado.save()
+        return feriado
+
+    def _get(self, ibge='3534401'):
+        response = self.client.get(self.url, {'ibge': ibge, 'year': '2026'}, **self.auth)
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+    def test_municipal_manual_sai_para_o_ibge_certo(self):
+        self._cadastrar(date=datetime.date(2026, 2, 19), name='Aniversário de Osasco',
+                        type='MUNICIPAL', ibge_code='3534401')
+
+        dados = self._get()
+
+        self.assertIn(
+            {'data': '2026-02-19', 'nome': 'Aniversário de Osasco', 'tipo': 'MUNICIPAL', 'uf': 'SP'}, dados,
+        )
+
+    def test_municipal_manual_nao_vaza_para_outro_municipio(self):
+        self._cadastrar(date=datetime.date(2026, 2, 19), name='Aniversário de Osasco',
+                        type='MUNICIPAL', ibge_code='3534401')
+        FeriadoBusca.objects.create(ibge_code='3550308', year=2026)  # São Paulo capital
+
+        nomes = [f['nome'] for f in self._get(ibge='3550308')]
+
+        self.assertNotIn('Aniversário de Osasco', nomes)
+
+    def test_estadual_manual_sai_para_municipio_da_uf(self):
+        self._cadastrar(date=datetime.date(2026, 7, 9), name='Revolução Constitucionalista',
+                        type='ESTADUAL', uf='SP')
+
+        dados = self._get()
+
+        self.assertIn(
+            {'data': '2026-07-09', 'nome': 'Revolução Constitucionalista', 'tipo': 'ESTADUAL', 'uf': 'SP'}, dados,
+        )
