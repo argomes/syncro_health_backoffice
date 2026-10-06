@@ -1,8 +1,10 @@
 import datetime
+
 from django.urls import reverse
-from rest_framework.test import APITestCase, APIClient
+from rest_framework.test import APIClient, APITestCase
+
 from clinics.tests import make_clinic
-from holidays.models import Feriado
+from holidays.models import Feriado, FeriadoBusca
 
 
 class HolidayViewTestCase(APITestCase):
@@ -56,6 +58,7 @@ class HolidayViewTestCase(APITestCase):
             description="Feriado Municipal de teste.",
             uf="SP"
         )
+        FeriadoBusca.objects.create(ibge_code="3534401", year=2026)
         response_valido = self.client.get(self.url, {'ibge': '3534401', 'year': '2026'}, **auth_headers)
         self.assertEqual(response_valido.status_code, 200)
         self.assertEqual(len(response_valido.json()), 2)

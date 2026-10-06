@@ -1,6 +1,51 @@
-import requests
+import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from datetime import datetime
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+# Mapeamento dos 2 primeiros dígitos do código IBGE de município para a UF.
+# Módulo-level (e não só atributo do provider) porque o service também
+# precisa da UF para filtrar os feriados ESTADUAIS do município no retorno.
+UF_BY_IBGE_PREFIX: dict[str, str] = {
+    '12': 'AC', '27': 'AL', '13': 'AM', '16': 'AP', '29': 'BA',
+    '23': 'CE', '53': 'DF', '32': 'ES', '52': 'GO', '21': 'MA',
+    '31': 'MG', '50': 'MS', '51': 'MT', '15': 'PA', '25': 'PB',
+    '26': 'PE', '22': 'PI', '41': 'PR', '33': 'RJ', '24': 'RN',
+    '43': 'RS', '11': 'RO', '14': 'RR', '42': 'SC', '28': 'SE',
+    '35': 'SP', '17': 'TO',
+}
+
+
+def uf_from_ibge(ibge_code: str) -> str | None:
+    """Deriva a UF a partir dos 2 primeiros dígitos do código IBGE.
+
+    Args:
+        ibge_code: Código IBGE do município (7 dígitos).
+
+    Returns:
+        A sigla da UF (ex.: "SP") ou None se o prefixo não for reconhecido.
+    """
+    return UF_BY_IBGE_PREFIX.get(str(ibge_code)[:2])
+
+
+@dataclass
+class HolidayFetchResult:
+    """Resultado de uma busca de feriados na API externa.
+
+    `complete` diz se a busca trouxe o calendário completo do município
+    (endpoint de cidade respondeu 200 em todas as páginas). Quando False
+    (falha de rede, status != 200, fallback nacional+estadual, paginação
+    interrompida), o service grava o que veio mas NÃO marca o par ibge/ano
+    como já buscado — assim a próxima chamada tenta de novo em vez de
+    congelar um calendário sem os feriados municipais.
+    """
+
+    feriados: list[dict] = field(default_factory=list)
+    complete: bool = False
 
 class BaseHolidayProvider(ABC):
     """Interface abstrata que define como qualquer provedor de feriado deve se comportar"""
@@ -8,7 +53,6 @@ class BaseHolidayProvider(ABC):
     @abstractmethod
     def find_municipal_holidays(self, ibge_code: str, year: int) -> list[dict]:
         """Return a list of municipal holidays for a given IBGE code and year."""
-        pass
     
     
 class ApiHolidayProvider(BaseHolidayProvider):
@@ -19,19 +63,8 @@ class ApiHolidayProvider(BaseHolidayProvider):
     # de mais que isso pra feriados de um único município/ano).
     MAX_PAGES = 20
 
-    # Mapeamento dos 2 primeiros dígitos do código IBGE de município para a
-    # UF correspondente. É a única forma de derivar a UF a partir só do
-    # `ibge_code` — evita exigir um parâmetro extra em `find_municipal_holidays`
-    # (a chamadora, `HolidayService.find_calendar_complet`, só tem o código
-    # IBGE hoje, não a UF separadamente).
-    _UF_BY_IBGE_PREFIX = {
-        '12': 'AC', '27': 'AL', '13': 'AM', '16': 'AP', '29': 'BA',
-        '23': 'CE', '53': 'DF', '32': 'ES', '52': 'GO', '21': 'MA',
-        '31': 'MG', '50': 'MS', '51': 'MT', '15': 'PA', '25': 'PB',
-        '26': 'PE', '22': 'PI', '41': 'PR', '33': 'RJ', '24': 'RN',
-        '43': 'RS', '11': 'RO', '14': 'RR', '42': 'SC', '28': 'SE',
-        '35': 'SP', '17': 'TO',
-    }
+    # Mantido como alias por compatibilidade com código/testes existentes.
+    _UF_BY_IBGE_PREFIX = UF_BY_IBGE_PREFIX
 
     def __init__(self, api_key: str, api_url: str):
         self.api_key = api_key
@@ -60,7 +93,7 @@ class ApiHolidayProvider(BaseHolidayProvider):
             })
         return feriados_padronizados
 
-    def _fetch_paginated(self, url: str, params: dict) -> list[dict]:
+    def _fetch_paginated(self, url: str, params: dict) -> tuple[list[dict], bool]:
         """Busca todos os feriados de um endpoint paginado da API.
 
         Helper privado reaproveitado pelos três endpoints (`cidade`,
@@ -80,7 +113,9 @@ class ApiHolidayProvider(BaseHolidayProvider):
                 e `page` são adicionados/atualizados internamente a cada
                 iteração do loop de paginação.
         Returns:
-            list[dict]: Lista bruta (não padronizada) de feriados da API.
+            tuple[list[dict], bool]: Lista bruta (não padronizada) de
+                feriados da API e um flag `ok` — False se QUALQUER página
+                falhou (o resultado pode estar vazio ou parcial).
         """
         headers = {"Authorization": f"Bearer {self.api_key}"}
         feriados_brutos: list[dict] = []
@@ -91,11 +126,21 @@ class ApiHolidayProvider(BaseHolidayProvider):
             try:
                 response = requests.get(url, headers=headers, params=request_params, timeout=8)
                 if response.status_code != 200:
-                    break
+                    # [LGPD] Só endpoint/status/página — nunca headers (contêm
+                    # a API key) nem corpo da resposta.
+                    logger.error(
+                        "API de feriados respondeu status %s (endpoint=%s, params=%s, page=%s)",
+                        response.status_code, url, params, page,
+                    )
+                    return feriados_brutos, False
 
                 dados = response.json()
-            except requests.RequestException:
-                break
+            except (requests.RequestException, ValueError) as exc:
+                logger.error(
+                    "Falha ao chamar API de feriados (endpoint=%s, params=%s, page=%s, erro=%s)",
+                    url, params, page, type(exc).__name__,
+                )
+                return feriados_brutos, False
 
             feriados_brutos.extend(dados.get('feriados', []))
 
@@ -108,7 +153,7 @@ class ApiHolidayProvider(BaseHolidayProvider):
 
             page = current_page + 1
 
-        return feriados_brutos
+        return feriados_brutos, True
 
     def _derive_uf(self, ibge_code: str) -> str | None:
         """Deriva a sigla da UF a partir dos 2 primeiros dígitos do código IBGE.
@@ -119,7 +164,7 @@ class ApiHolidayProvider(BaseHolidayProvider):
             str | None: A sigla da UF (ex.: "SP") ou None se o prefixo não
                 for reconhecido (código malformado).
         """
-        return self._UF_BY_IBGE_PREFIX.get(str(ibge_code)[:2])
+        return uf_from_ibge(ibge_code)
 
     def _find_national_and_state_holidays(self, uf: str | None, year: int) -> list[dict]:
         """Busca feriados nacionais + estaduais (endpoints 100% gratuitos, sem cota).
@@ -137,14 +182,15 @@ class ApiHolidayProvider(BaseHolidayProvider):
         Returns:
             list[dict]: Feriados nacionais + estaduais (brutos, não padronizados).
         """
-        feriados_brutos = self._fetch_paginated(
+        feriados_brutos, _ = self._fetch_paginated(
             f"{self.api_base_url}/v1/feriados/nacionais", {"ano": year}
         )
 
         if uf:
-            feriados_brutos += self._fetch_paginated(
+            estaduais, _ = self._fetch_paginated(
                 f"{self.api_base_url}/v1/feriados/estado/{uf}", {"ano": year}
             )
+            feriados_brutos += estaduais
 
         return feriados_brutos
 
@@ -173,11 +219,38 @@ class ApiHolidayProvider(BaseHolidayProvider):
                 (municipais em caso de sucesso; nacionais+estaduais em caso
                 de fallback; lista vazia só se TUDO falhar).
         """
+        return self.fetch_holidays(ibge_code, year).feriados
+
+    def fetch_holidays(self, ibge_code: str, year: int) -> HolidayFetchResult:
+        """Busca o calendário do município e informa se ele veio completo.
+
+        Mesma estratégia de `find_municipal_holidays` (cidade primeiro,
+        fallback nacional+estadual só se a cidade não trouxer nada), mas
+        expõe `complete` para o service decidir se pode marcar o par
+        ibge/ano como já buscado.
+
+        Args:
+            ibge_code: Código IBGE do município.
+            year: Ano de referência.
+
+        Returns:
+            HolidayFetchResult com os feriados padronizados e o flag
+            `complete` (True só se o endpoint de cidade respondeu 200 em
+            todas as páginas).
+        """
         url = self.api_url.format(ibge=ibge_code)
-        feriados_brutos = self._fetch_paginated(url, {"ano": year})
+        feriados_brutos, ok = self._fetch_paginated(url, {"ano": year})
 
         if not feriados_brutos:
             uf = self._derive_uf(ibge_code)
+            logger.warning(
+                "Endpoint de cidade sem feriados (ibge=%s, ano=%s, ok=%s); "
+                "usando fallback nacional+estadual (uf=%s)",
+                ibge_code, year, ok, uf,
+            )
             feriados_brutos = self._find_national_and_state_holidays(uf, year)
+            # Fallback nunca é "completo": faltam os municipais, e o endpoint
+            # de cidade sempre devolve ao menos os nacionais quando funciona.
+            ok = False
 
-        return self._padronizar(feriados_brutos)
+        return HolidayFetchResult(feriados=self._padronizar(feriados_brutos), complete=ok)
