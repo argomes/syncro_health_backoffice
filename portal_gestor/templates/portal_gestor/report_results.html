@@ -32,7 +32,7 @@
                                 <td>{{ p.document|default:"—" }}</td>
                                 <td>{{ p.phone|default:"—" }}</td>
                                 <td>{{ p.email|default:"—" }}</td>
-                                <td>{{ p.updated_at }}</td>
+                                <td>{{ p.updated_at|date:"d/m/Y H:i"|default:"—" }}</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -52,11 +52,11 @@
                     <tbody>
                         {% for a in appointments %}
                             <tr>
-                                <td>{{ a.start_time }}</td>
-                                <td>{{ a.end_time }}</td>
-                                <td>{{ a.status }}</td>
+                                <td>{{ a.start_time|date:"d/m/Y H:i"|default:"—" }}</td>
+                                <td>{{ a.end_time|date:"d/m/Y H:i"|default:"—" }}</td>
+                                <td>{{ a.status_label }}</td>
                                 <td>{{ a.notes|default:"—" }}</td>
-                                <td>{{ a.updated_at }}</td>
+                                <td>{{ a.updated_at|date:"d/m/Y H:i"|default:"—" }}</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -80,7 +80,7 @@
                                 <td>{{ mr.appointment_id }}</td>
                                 <td>{{ mr.professional_id }}</td>
                                 <td>{% if mr.finalized %}Sim{% else %}Não{% endif %}</td>
-                                <td>{{ mr.updated_at }}</td>
+                                <td>{{ mr.updated_at|date:"d/m/Y H:i"|default:"—" }}</td>
                             </tr>
                         {% endfor %}
                     </tbody>

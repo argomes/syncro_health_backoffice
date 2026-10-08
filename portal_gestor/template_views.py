@@ -8,6 +8,7 @@ ClinicTokenRefreshSerializer) — só muda o transporte do token, não a lógica
 autenticação/emissão.
 """
 from datetime import datetime, time
+from typing import Any, Iterable, Optional
 
 from django.conf import settings
 from django.http import Http404
@@ -23,26 +24,13 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from accounts.authentication import PORTAL_ACCESS_COOKIE
 from accounts.portal_serializers import ClinicTokenObtainPairSerializer, ClinicTokenRefreshSerializer
+from clinics.models import ClinicStatus
 from support.models import Ticket
 
 from . import report_reads, services
-from .dashboard import HEARTBEAT_STALE_THRESHOLD_MINUTES, get_dashboard_summary
+from .dashboard import get_license_status, get_recent_report_sessions, get_sync_status
+from .labels import appointment_status_label
 from .models import ReportSession
-
-# Acima deste limite de atraso (minutos desde o último heartbeat), o card de
-# sincronização mostra "desconectado" (vermelho) em vez de "atrasado"
-# (amarelo). Puramente de apresentação — não altera a semântica de
-# `connected` já revisada em dashboard.py (TASK-048), só refina como um
-# `connected=False` é exibido visualmente.
-#
-# Derivado como múltiplo do HEARTBEAT_STALE_THRESHOLD_MINUTES (TASK-048) em
-# vez de um número solto: `connected=False` já significa "mais velho que
-# HEARTBEAT_STALE_THRESHOLD_MINUTES" (hoje 10 min, 2x o intervalo esperado de
-# ~5 min do HealthWorker); o card fica "amarelo" por mais um múltiplo desse
-# mesmo intervalo antes de virar "vermelho", em vez de um segundo valor
-# independente. Se HEARTBEAT_EXPECTED_INTERVAL_MINUTES mudar, este threshold
-# acompanha automaticamente.
-SYNC_OFFLINE_THRESHOLD_MINUTES = HEARTBEAT_STALE_THRESHOLD_MINUTES * 3
 
 PORTAL_REFRESH_COOKIE = 'portal_refresh_token'
 _REFRESH_COOKIE_PATH = '/portal/refresh/'
@@ -151,31 +139,27 @@ class PortalRefreshView(View):
         return _set_auth_cookies(response, data['access'], data.get('refresh'))
 
 
-def _sync_state(gateway_status: dict) -> str:
+def _dashboard_context(request) -> dict[str, Any]:
+    """Contexto de APRESENTAÇÃO do dashboard HTML (TASK-049 + O1/O2).
+
+    Não reaproveita o payload JSON de ``get_dashboard_summary`` de propósito:
+    lá as datas já viraram string ISO (contrato da API) e o template perdia a
+    capacidade de formatá-las (``|date`` sobre string renderiza vazio). Aqui
+    o template recebe ``datetime`` reais, instâncias de modelo (para
+    ``get_status_display``) e o ``SyncStatus`` já decidido em dashboard.py —
+    o template só exibe, não decide cor nem regra.
+
+    Tudo é derivado de ``request.clinic`` (injetado pelo middleware do
+    portal), nunca de parâmetro do cliente — isolamento multi-tenant.
     """
-    Deriva o estado visual do card de sincronização a partir do payload de
-    dashboard.py::get_dashboard_summary. Mantido aqui (não em dashboard.py)
-    porque é uma decisão de apresentação (4 cores) sobre um contrato de dados
-    já revisado (connected: True/False/None) — não altera esse contrato.
-    """
-    connected = gateway_status['connected']
-    if connected is None:
-        return 'never'  # cinza — nunca sincronizou
-    if connected:
-        return 'ok'  # verde — sincronizado
-
-    last_seen = gateway_status['last_seen']
-    if last_seen is None:
-        return 'offline'
-    age_minutes = (timezone.now() - parse_datetime(last_seen)).total_seconds() / 60
-    return 'delayed' if age_minutes <= SYNC_OFFLINE_THRESHOLD_MINUTES else 'offline'  # amarelo / vermelho
-
-
-def _dashboard_context(request):
-    summary = get_dashboard_summary(request.clinic)
+    clinic = request.clinic
+    license_info = get_license_status(clinic)
+    license_info['status_label'] = clinic.get_status_display()
+    license_info['is_active'] = clinic.status == ClinicStatus.ACTIVE
     return {
-        'summary': summary,
-        'sync_state': _sync_state(summary['gateway_status']),
+        'sync': get_sync_status(clinic),
+        'license': license_info,
+        'recent_sessions': get_recent_report_sessions(clinic),
     }
 
 
@@ -288,6 +272,50 @@ class ReportStatusFragmentView(View):
         return render(request, 'portal_gestor/_report_status_fragment.html', {'session': session})
 
 
+# Campos de data/hora que report_reads devolve como string ISO (contrato
+# compartilhado com a API JSON, que não pode mudar). Só o HTML precisa de
+# datetime para formatar em dd/mm/aaaa HH:MM.
+_REPORT_DATETIME_FIELDS: tuple[str, ...] = ('start_time', 'end_time', 'updated_at')
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    """Converte string ISO em datetime; ``None`` para vazio ou inválido.
+
+    Não aplica offset algum: o datetime sai exatamente como o gateway gravou
+    (aware → o filtro ``|date`` usa o TIME_ZONE do projeto; naive → exibido
+    como veio). Valor inválido vira ``None`` (exibido como "—") em vez de
+    derrubar a página inteira de relatório por uma linha malformada.
+    """
+    if isinstance(value, datetime):
+        return value
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return parse_datetime(value)
+    except ValueError:
+        return None
+
+
+def _present_rows(rows: Iterable[dict[str, Any]], with_appointment_status: bool = False) -> list[dict[str, Any]]:
+    """Prepara linhas de relatório para o template (O2).
+
+    Copia cada dict (não muta o retorno de report_reads), troca as datas ISO
+    por ``datetime`` e, para agendamentos, adiciona ``status_label`` em pt-BR.
+    Nenhum campo novo de paciente é adicionado — só reformatação do que já
+    estava autorizado pela sessão.
+    """
+    presented: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        for field in _REPORT_DATETIME_FIELDS:
+            if field in item:
+                item[field] = _parse_iso(item[field])
+        if with_appointment_status:
+            item['status_label'] = appointment_status_label(item.get('status'))
+        presented.append(item)
+    return presented
+
+
 class ReportResultsView(View):
     """
     GET /portal/relatorios/{session_id}/resultados/ — chama report_reads
@@ -302,11 +330,18 @@ class ReportResultsView(View):
         context = {'session': session}
         try:
             if 'patients' in session.entities_scope:
-                context['patients'] = report_reads.read_patients_report(request.clinic, session)
+                context['patients'] = _present_rows(
+                    report_reads.read_patients_report(request.clinic, session),
+                )
             if 'appointments' in session.entities_scope:
-                context['appointments'] = report_reads.read_appointments_report(request.clinic, session)
+                context['appointments'] = _present_rows(
+                    report_reads.read_appointments_report(request.clinic, session),
+                    with_appointment_status=True,
+                )
             if 'medical_records' in session.entities_scope:
-                context['medical_records'] = report_reads.read_medical_records_report(request.clinic, session)
+                context['medical_records'] = _present_rows(
+                    report_reads.read_medical_records_report(request.clinic, session),
+                )
         except PermissionDenied:
             context = {
                 'session': session,
