@@ -3,9 +3,8 @@ Testes da TASK-049 — tela inicial (dashboard) e seu fragmento HTMX de polling.
 """
 import uuid
 from datetime import timedelta
-from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from accounts.models import ClinicUser
@@ -14,7 +13,16 @@ from metrics.models import SystemHeartbeat
 
 from . import services
 from .models import ReportSessionStatus
-from .template_views import SYNC_OFFLINE_THRESHOLD_MINUTES, _sync_state
+from .dashboard import (
+    HEARTBEAT_STALE_THRESHOLD_MINUTES,
+    SYNC_PENDING_TOLERANCE,
+    SYNC_STATE_NEVER,
+    SYNC_STATE_OFFLINE,
+    SYNC_STATE_OK,
+    SYNC_STATE_SYNCING,
+    compute_sync_status,
+    humanize_age_ptbr,
+)
 
 
 def make_clinic(name='Clínica Teste', **kwargs):
@@ -37,31 +45,80 @@ def make_clinic_user(clinic, email='gerente@a.com', password='senha-123'):
     return user
 
 
-class SyncStateHelperTest(TestCase):
-    def test_never_synced(self):
-        self.assertEqual(_sync_state({'connected': None, 'last_seen': None}), 'never')
+class ComputeSyncStatusTest(SimpleTestCase):
+    """O1 — regra honesta do card de sincronização (função pura, sem banco)."""
 
-    def test_connected(self):
-        self.assertEqual(_sync_state({'connected': True, 'last_seen': timezone.now().isoformat()}), 'ok')
+    def setUp(self):
+        self.now = timezone.now()
 
-    def test_delayed_within_offline_threshold(self):
-        last_seen = (timezone.now() - timedelta(minutes=SYNC_OFFLINE_THRESHOLD_MINUTES - 1)).isoformat()
-        self.assertEqual(_sync_state({'connected': False, 'last_seen': last_seen}), 'delayed')
+    def _heartbeat(self, minutes_ago=1, sync_connected=True, pending_sync=0):
+        # Instância não salva: compute_sync_status só lê atributos, então o
+        # teste fica determinístico (sem auto_now sobrescrevendo last_seen).
+        return SystemHeartbeat(
+            gateway_version='1.0.0',
+            last_seen=self.now - timedelta(minutes=minutes_ago),
+            sync_connected=sync_connected,
+            pending_sync=pending_sync,
+        )
 
-    def test_offline_beyond_threshold(self):
-        last_seen = (timezone.now() - timedelta(minutes=SYNC_OFFLINE_THRESHOLD_MINUTES + 1)).isoformat()
-        self.assertEqual(_sync_state({'connected': False, 'last_seen': last_seen}), 'offline')
+    def test_never_synced_is_gray(self):
+        status = compute_sync_status(None, self.now)
+        self.assertEqual(status.state, SYNC_STATE_NEVER)
+        self.assertEqual(status.badge, 'gray')
+        self.assertIsNone(status.last_seen)
 
-    def test_delayed_at_exact_threshold_boundary(self):
-        # <= SYNC_OFFLINE_THRESHOLD_MINUTES ainda é "delayed" (amarelo), não "offline".
-        # `timezone.now()` é congelado para o mesmo instante usado em `_sync_state`
-        # (que também chama `timezone.now()` internamente) — sem isso, o tempo real
-        # decorrido entre as duas chamadas empurra a idade para além do threshold
-        # exato de forma intermitente (flake por precisão de clock).
-        frozen_now = timezone.now()
-        last_seen = (frozen_now - timedelta(minutes=SYNC_OFFLINE_THRESHOLD_MINUTES)).isoformat()
-        with patch('portal_gestor.template_views.timezone.now', return_value=frozen_now):
-            self.assertEqual(_sync_state({'connected': False, 'last_seen': last_seen}), 'delayed')
+    def test_green_when_recent_connected_and_no_backlog(self):
+        status = compute_sync_status(self._heartbeat(minutes_ago=3, pending_sync=0), self.now)
+        self.assertEqual(status.state, SYNC_STATE_OK)
+        self.assertEqual(status.badge, 'green')
+        self.assertEqual(status.label, 'Sincronizado')
+        self.assertEqual(status.last_seen_ago, 'há 3 min')
+
+    def test_green_tolerates_small_in_flight_backlog(self):
+        status = compute_sync_status(self._heartbeat(pending_sync=SYNC_PENDING_TOLERANCE), self.now)
+        self.assertEqual(status.state, SYNC_STATE_OK)
+
+    def test_yellow_when_connected_with_backlog_above_tolerance(self):
+        pending = SYNC_PENDING_TOLERANCE + 7
+        status = compute_sync_status(self._heartbeat(pending_sync=pending), self.now)
+        self.assertEqual(status.state, SYNC_STATE_SYNCING)
+        self.assertEqual(status.badge, 'yellow')
+        self.assertEqual(status.label, f'Sincronizando — {pending} pendentes')
+        self.assertEqual(status.pending_sync, pending)
+
+    def test_red_when_recent_heartbeat_but_cloud_disconnected(self):
+        # Era o bug do O1: heartbeat recente deixava verde mesmo sem nuvem.
+        status = compute_sync_status(self._heartbeat(minutes_ago=1, sync_connected=False), self.now)
+        self.assertEqual(status.state, SYNC_STATE_OFFLINE)
+        self.assertEqual(status.badge, 'red')
+        self.assertEqual(status.label, 'Sem conexão com a nuvem')
+
+    def test_red_when_heartbeat_stale_even_if_last_report_was_connected(self):
+        hb = self._heartbeat(minutes_ago=HEARTBEAT_STALE_THRESHOLD_MINUTES + 1, sync_connected=True)
+        status = compute_sync_status(hb, self.now)
+        self.assertEqual(status.state, SYNC_STATE_OFFLINE)
+
+    def test_stale_heartbeat_with_backlog_is_red_not_yellow(self):
+        hb = self._heartbeat(minutes_ago=HEARTBEAT_STALE_THRESHOLD_MINUTES + 1, pending_sync=500)
+        self.assertEqual(compute_sync_status(hb, self.now).state, SYNC_STATE_OFFLINE)
+
+    def test_exact_stale_threshold_is_still_fresh(self):
+        hb = self._heartbeat(minutes_ago=HEARTBEAT_STALE_THRESHOLD_MINUTES)
+        self.assertEqual(compute_sync_status(hb, self.now).state, SYNC_STATE_OK)
+
+    def test_stale_threshold_is_ten_minutes_by_default(self):
+        self.assertEqual(HEARTBEAT_STALE_THRESHOLD_MINUTES, 10)
+
+
+class HumanizeAgePtBrTest(SimpleTestCase):
+    def test_formats(self):
+        self.assertEqual(humanize_age_ptbr(timedelta(seconds=-5)), 'agora mesmo')
+        self.assertEqual(humanize_age_ptbr(timedelta(seconds=30)), 'agora mesmo')
+        self.assertEqual(humanize_age_ptbr(timedelta(minutes=1)), 'há 1 min')
+        self.assertEqual(humanize_age_ptbr(timedelta(minutes=59)), 'há 59 min')
+        self.assertEqual(humanize_age_ptbr(timedelta(hours=2, minutes=10)), 'há 2 h')
+        self.assertEqual(humanize_age_ptbr(timedelta(days=1, hours=3)), 'há 1 dia')
+        self.assertEqual(humanize_age_ptbr(timedelta(days=4)), 'há 4 dias')
 
 
 class DashboardHomeViewTest(TestCase):
@@ -75,10 +132,39 @@ class DashboardHomeViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Nunca sincronizou')
 
-    def test_renders_synced_state_with_recent_heartbeat(self):
-        SystemHeartbeat.objects.create(clinic=self.clinic, gateway_version='1.0.0')
+    def test_renders_green_synced_state(self):
+        SystemHeartbeat.objects.create(clinic=self.clinic, gateway_version='1.0.0', sync_connected=True)
         response = self.client.get('/portal/')
+        self.assertContains(response, 'badge-green')
         self.assertContains(response, 'Sincronizado')
+        self.assertContains(response, 'Última sincronização: agora mesmo')
+        self.assertContains(response, timezone.localtime().strftime('%d/%m/%Y'))
+        self.assertNotContains(response, 'Sem conexão com a nuvem')
+
+    def test_renders_yellow_syncing_state_with_backlog(self):
+        SystemHeartbeat.objects.create(
+            clinic=self.clinic, gateway_version='1.0.0', sync_connected=True,
+            pending_sync=SYNC_PENDING_TOLERANCE + 20,
+        )
+        response = self.client.get('/portal/')
+        self.assertContains(response, 'badge-yellow')
+        self.assertContains(response, f'Sincronizando — {SYNC_PENDING_TOLERANCE + 20} pendentes')
+
+    def test_renders_red_when_heartbeat_recent_but_cloud_disconnected(self):
+        SystemHeartbeat.objects.create(clinic=self.clinic, gateway_version='1.0.0', sync_connected=False)
+        response = self.client.get('/portal/')
+        self.assertContains(response, 'badge-red')
+        self.assertContains(response, 'Sem conexão com a nuvem')
+        self.assertNotContains(response, '● Sincronizado')
+
+    def test_renders_red_when_heartbeat_stale(self):
+        hb = SystemHeartbeat.objects.create(clinic=self.clinic, gateway_version='1.0.0', sync_connected=True)
+        stale = timezone.now() - timedelta(minutes=HEARTBEAT_STALE_THRESHOLD_MINUTES + 25)
+        SystemHeartbeat.objects.filter(pk=hb.pk).update(last_seen=stale)
+        response = self.client.get('/portal/')
+        self.assertContains(response, 'Sem conexão com a nuvem')
+        self.assertContains(response, 'Última sincronização: há 35 min')
+        self.assertContains(response, timezone.localtime(stale).strftime('%d/%m/%Y %H:%M'))
 
     def test_license_card_hidden_when_no_warning(self):
         response = self.client.get('/portal/')
@@ -96,13 +182,39 @@ class DashboardHomeViewTest(TestCase):
         self.assertContains(response, 'Gerar Relatório')
         self.assertContains(response, 'Nenhum relatório gerado ainda.')
 
-    def test_recent_report_session_listed(self):
+    def test_recent_report_session_listed_with_ptbr_status_and_dates(self):
+        # O2: antes o card mostrava "pending" cru e datas vazias (|date sobre
+        # string ISO vinda do serializer).
+        date_from = timezone.now() - timedelta(days=3)
+        date_to = timezone.now() - timedelta(days=1)
         services.create_report_session(
+            clinic=self.clinic, created_by=None, entities=['patients'],
+            date_from=date_from, date_to=date_to,
+        )
+        response = self.client.get('/portal/')
+        self.assertContains(response, 'Pendente')
+        self.assertNotContains(response, '>pending<')
+        self.assertContains(response, timezone.localtime(date_from).strftime('%d/%m/%Y'))
+        self.assertContains(response, timezone.localtime(date_to).strftime('%d/%m/%Y'))
+        self.assertContains(response, 'pedido em')
+
+    def test_expired_session_status_in_ptbr(self):
+        session = services.create_report_session(
             clinic=self.clinic, created_by=None, entities=['patients'],
             date_from=timezone.now() - timedelta(days=1), date_to=timezone.now(),
         )
+        session.mark_expired()
         response = self.client.get('/portal/')
-        self.assertContains(response, 'pending')
+        self.assertContains(response, 'Expirado')
+        self.assertNotContains(response, '>expired<')
+
+    def test_suspended_clinic_status_shown_in_ptbr(self):
+        self.clinic.status = ClinicStatus.SUSPENDED
+        self.clinic.save(update_fields=['status'])
+        response = self.client.get('/portal/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Suspensa')
+        self.assertNotContains(response, '>suspended<')
 
     def test_requires_login(self):
         self.client.cookies.clear()
@@ -143,7 +255,7 @@ class DashboardFragmentViewTest(TestCase):
         first = self.client.get('/portal/dashboard/fragment/')
         self.assertContains(first, 'Nunca sincronizou')
 
-        SystemHeartbeat.objects.create(clinic=self.clinic, gateway_version='1.0.0')
+        SystemHeartbeat.objects.create(clinic=self.clinic, gateway_version='1.0.0', sync_connected=True)
 
         second = self.client.get('/portal/dashboard/fragment/')
         self.assertContains(second, 'Sincronizado')

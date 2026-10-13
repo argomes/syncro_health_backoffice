@@ -3,38 +3,35 @@
      hx-trigger="every 30s"
      hx-swap="outerHTML">
 
-    {# ---------- Card 1: status de sincronização ---------- #}
-    <section class="card sync-card sync-{{ sync_state }}">
-        {% if sync_state == 'ok' %}
-            <span class="badge badge-green">● Sincronizado</span>
-            <p>Última sincronização: {{ summary.gateway_status.last_seen|default:"—" }}</p>
-        {% elif sync_state == 'delayed' %}
-            <span class="badge badge-yellow">● Atrasado</span>
-            <p>Última sincronização: {{ summary.gateway_status.last_seen }}</p>
-        {% elif sync_state == 'offline' %}
-            <span class="badge badge-red">● Desconectado</span>
-            <p>Última sincronização: {{ summary.gateway_status.last_seen|default:"—" }}</p>
+    {# ---------- Card 1: status de sincronização ----------
+       Estado/rótulo/cor decididos em dashboard.compute_sync_status (O1) —
+       o template só exibe. Datas sempre dd/mm/aaaa HH:MM. #}
+    <section class="card sync-card sync-{{ sync.state }}">
+        <span class="badge badge-{{ sync.badge }}">● {{ sync.label }}</span>
+        {% if sync.last_seen %}
+            <p title="{{ sync.last_seen|date:'d/m/Y H:i' }}">Última sincronização: {{ sync.last_seen_ago }} <span class="muted">({{ sync.last_seen|date:"d/m/Y H:i" }})</span></p>
+            {% if sync.state == 'offline' %}
+                <p class="muted">Os dados continuam salvos no computador da clínica e serão enviados assim que a conexão voltar.</p>
+            {% elif sync.pending_sync %}
+                <p class="muted">{{ sync.pending_sync }} registro(s) aguardando envio para a nuvem.</p>
+            {% endif %}
         {% else %}
-            <span class="badge badge-gray">● Nunca sincronizou</span>
             <p>Esta clínica ainda não conectou o gateway.</p>
-        {% endif %}
-        {% if summary.gateway_status.pending_sync %}
-            <p class="muted">{{ summary.gateway_status.pending_sync }} registro(s) pendente(s) de envio.</p>
         {% endif %}
     </section>
 
     {# ---------- Card 2: alerta de licença — só aparece se houver pendência ---------- #}
-    {% if summary.license.warning %}
+    {% if license.warning %}
         <section class="card license-card">
             <span class="badge badge-yellow">⚠ Atenção à licença</span>
-            {% if summary.license.status != "active" %}
-                <p>Status da clínica: <strong>{{ summary.license.status }}</strong></p>
+            {% if not license.is_active %}
+                <p>Status da clínica: <strong>{{ license.status_label }}</strong></p>
             {% endif %}
-            {% if summary.license.days_until_expiry is not None %}
-                {% if summary.license.days_until_expiry < 0 %}
+            {% if license.days_until_expiry is not None %}
+                {% if license.days_until_expiry < 0 %}
                     <p>Licença expirada.</p>
                 {% else %}
-                    <p>Licença vence em {{ summary.license.days_until_expiry }} dia(s).</p>
+                    <p>Licença vence em {{ license.days_until_expiry }} dia(s).</p>
                 {% endif %}
             {% endif %}
         </section>
@@ -45,13 +42,14 @@
         <h2>Relatórios</h2>
         <a class="button" href="{% url 'portal_report_new' %}">Gerar Relatório</a>
 
-        {% if summary.report_sessions.recent %}
+        {% if recent_sessions %}
             <ul class="report-list">
-                {% for session in summary.report_sessions.recent %}
+                {% for session in recent_sessions %}
                     <li>
                         <a href="{% url 'portal_report_status' session.session_id %}">
-                            <span class="badge badge-{{ session.status }}">{{ session.status }}</span>
-                            {{ session.date_from|date:"d/m/Y" }} – {{ session.date_to|date:"d/m/Y" }}
+                            <span class="badge badge-{{ session.status }}">{{ session.get_status_display }}</span>
+                            {{ session.date_from|date:"d/m/Y" }} a {{ session.date_to|date:"d/m/Y" }}
+                            <span class="muted">· pedido em {{ session.created_at|date:"d/m/Y H:i" }}</span>
                         </a>
                     </li>
                 {% endfor %}

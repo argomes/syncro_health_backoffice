@@ -243,6 +243,37 @@ class ReportResultsViewTest(TestCase):
         self.assertContains(response, 'Nenhum agendamento disponível')
         mock_patients.assert_called_once_with(self.clinic_a, self.session)
 
+    @patch('portal_gestor.template_views.report_reads.read_appointments_report')
+    @patch('portal_gestor.template_views.report_reads.read_patients_report')
+    def test_appointment_dates_and_status_rendered_in_ptbr(self, mock_patients, mock_appointments):
+        # O2: datas ISO cruas e status em inglês ("no_show") apareciam direto
+        # na tabela. Datas naive aqui para não depender de conversão de fuso.
+        mock_patients.return_value = []
+        mock_appointments.return_value = [{
+            'id': 'a1', 'patient_id': 'p1',
+            'start_time': '2026-10-08T09:30:00', 'end_time': '2026-10-08T10:00:00',
+            'status': 'no_show', 'notes': None, 'clinical_notes': None, 'metadata': None,
+            'updated_at': '2026-10-08T10:05:00',
+        }, {
+            'id': 'a2', 'patient_id': 'p2',
+            'start_time': None, 'end_time': 'invalido',
+            'status': 'status_novo_do_gateway', 'notes': None, 'clinical_notes': None,
+            'metadata': None, 'updated_at': None,
+        }]
+
+        response = self.client.get(f'/portal/relatorios/{self.session.session_id}/resultados/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '08/10/2026 09:30')
+        self.assertContains(response, '08/10/2026 10:00')
+        self.assertContains(response, '08/10/2026 10:05')
+        self.assertContains(response, 'Não compareceu')
+        self.assertNotContains(response, '2026-10-08T09:30')
+        self.assertNotContains(response, '>no_show<')
+        # Status desconhecido aparece cru (não some); data inválida vira "—".
+        self.assertContains(response, 'status_novo_do_gateway')
+        self.assertNotContains(response, 'invalido')
+
     @patch('portal_gestor.template_views.report_reads.read_patients_report')
     def test_permission_denied_shows_friendly_message_not_500(self, mock_patients):
         mock_patients.side_effect = PermissionDenied('session_expired')
