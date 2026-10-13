@@ -100,12 +100,12 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Deploy to Railway (serviço backoffice)
+      - name: Deploy to Railway (serviço syncro_health_backoffice)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         # RAILWAY_TOKEN precisa ser um Project Token (não Account Token) do
-        # serviço "backoffice" no Railway, cadastrado como secret do repo —
-        # não configurado neste ambiente de desenvolvimento (sem acesso a
-        # credenciais reais do Railway), então este passo não pôde ser
-        # validado ponta a ponta aqui. Ver PR para detalhes.
-        run: railway up --service backoffice --detach
+        # projeto onde vive o serviço "syncro_health_backoffice", cadastrado
+        # como secret do repo. O nome do serviço mudou quando os serviços foram
+        # recriados no incidente de 2026-08-10/11; com o nome antigo
+        # ("backoffice") todo deploy falhava com "Service not found".
+        run: railway up --service syncro_health_backoffice --detach
